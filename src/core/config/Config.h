@@ -97,15 +97,16 @@ enum RadioRegion : uint8_t {
     REGION_EUROPE    = 1,  // 868 MHz (863-870)
     REGION_AUSTRALIA = 2,  // 915 MHz (915-928)
     REGION_ASIA      = 3,  // 923 MHz (AS923)
-    REGION_COUNT     = 4
+    REGION_INDIA     = 4,  // 866 MHz (IN865: 865-867)
+    REGION_COUNT     = 5
 };
 
 static constexpr uint32_t REGION_FREQ[REGION_COUNT] = {
-    915000000, 868000000, 915000000, 923000000
+    915000000, 868000000, 915000000, 923000000, 866000000
 };
 
 static const char* const REGION_LABELS[REGION_COUNT] = {
-    "Americas (915)", "Europe (868)", "Australia (915)", "Asia (923)"
+    "Americas (915)", "Europe (868)", "Australia (915)", "Asia (923)", "India (866)"
 };
 
 // --- Serial Debug ---

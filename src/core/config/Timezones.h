@@ -25,7 +25,7 @@ static const TimezoneEntry TIMEZONE_TABLE[] = {
     {"Moscow",                "MSK-3",                                    3,   REGION_EUROPE},
     {"Dubai",                 "<+04>-4",                                  4,   REGION_EUROPE},
     {"Karachi",               "PKT-5",                                    5,   REGION_EUROPE},
-    {"Kolkata",               "IST-5:30",                                 5,   REGION_EUROPE},
+    {"Kolkata",               "IST-5:30",                                 5,   REGION_INDIA},
     {"Bangkok",               "<+07>-7",                                  7,   REGION_ASIA},
     {"Singapore",             "<+08>-8",                                  8,   REGION_ASIA},
     {"Tokyo",                 "JST-9",                                    9,   REGION_ASIA},

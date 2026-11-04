@@ -423,7 +423,9 @@ void LvSettingsScreen::buildItems() {
             s.loraFrequency = REGION_FREQ[v];
         };
         regionItem.minVal = 0; regionItem.maxVal = REGION_COUNT - 1; regionItem.step = 1;
-        regionItem.enumLabels = {REGION_LABELS[0], REGION_LABELS[1], REGION_LABELS[2], REGION_LABELS[3], "Custom"};
+        regionItem.enumLabels.clear();
+        for (int r = 0; r < REGION_COUNT; r++) regionItem.enumLabels.push_back(REGION_LABELS[r]);
+        regionItem.enumLabels.push_back("Custom");
         _items.push_back(regionItem);
         _items.back().id = SettingId::RegionPreset;
         idx++;

@@ -39,6 +39,7 @@
 #include "runtime/AnnounceScheduler.h"
 #include "transport/RnsAutoInterface.h"
 #include "config/UserConfig.h"
+#include "radio/RadioRegions.h"
 #include "config/SettingsTransaction.h"
 #include "config/NetworkSettings.h"
 #include "screens/NodesScreen.h"
@@ -919,9 +920,7 @@ void setup() {
         // Region suggestion is only this explicit first-setup choice. A later
         // timezone edit/recovery preserves the established manual frequency.
         if (!next.timezoneSet) {
-            const uint8_t region = TIMEZONE_TABLE[tzIdx].radioRegion;
-            next.radioRegion = region;
-            next.loraFrequency = REGION_FREQ[region];
+            RadioRegions::apply(next, TIMEZONE_TABLE[tzIdx].radioRegion);
         }
         next.timezoneSet = true;
         saveCardScalars(next, CardSettingsStep::Timezone);

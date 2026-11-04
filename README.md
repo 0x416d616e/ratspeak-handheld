@@ -125,8 +125,21 @@ of assuming the defaults. Choosing a region again restores its default frequency
 changing the link preset does not change frequency. TX power need not match.
 In **RNode mode**, the connected host client controls the radio settings.
 
+**India (IN865)** is the one region that also enforces limits. Choosing it
+applies a complete compliant link: 866.000 MHz, bandwidth **125 kHz**, SF 9,
+coding rate 4/5, 17 dBm and an 18-symbol preamble (Medium Fast, narrowed). While
+India is selected and the radio is tuned inside 865-867 MHz, bandwidth is kept
+at or below 125 kHz, the widest standard LoRa width under India's 200 kHz
+carrier limit. Link presets run narrowed to 125 kHz, so Short Turbo and Long
+Turbo become Short Fast and Long Moderate, and manual edits are clamped when
+saved. India's 1 W (30 dBm) power limit is above the radio's 22 dBm maximum.
+An RNode linking with a handheld on the India preset needs
+`frequency = 866000000`, `bandwidth = 125000`, `spreadingfactor = 9` and
+`codingrate = 5`.
+
 Follow your local radio regulations for frequency, transmit power and duty
-cycle. Region and link presets do not limit power or airtime for your region.
+cycle. Apart from India, region and link presets do not limit power or airtime
+for your region.
 
 ## Propagation
 

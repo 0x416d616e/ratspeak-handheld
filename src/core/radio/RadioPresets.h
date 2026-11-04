@@ -1,6 +1,7 @@
 #pragma once
 
 #include "config/UserConfig.h"
+#include "radio/RadioRegions.h"
 
 namespace RadioPresets {
 
@@ -26,13 +27,19 @@ inline constexpr Preset values[] = {
 inline constexpr int count = sizeof(values) / sizeof(values[0]);
 
 inline int detect(const UserScalars& settings) {
+    int found = -1;
     for (int i = 0; i < count; ++i) {
         const auto& preset = values[i];
-        if (settings.loraSF == preset.sf && settings.loraBW == preset.bw &&
+        // Under regional limits a preset runs narrowed, and is still that
+        // preset. Narrowing can make two presets identical; name the one whose
+        // own bandwidth is closest (e.g. Long Moderate over Long Turbo).
+        if (settings.loraSF == preset.sf &&
+            settings.loraBW == RadioRegions::allowedBandwidth(settings, preset.bw) &&
             settings.loraCR == preset.cr && settings.loraTxPower == preset.txPower &&
-            settings.loraPreamble == preset.preamble) return i;
+            settings.loraPreamble == preset.preamble &&
+            (found < 0 || preset.bw < values[found].bw)) found = i;
     }
-    return -1;
+    return found;
 }
 
 inline const char* name(const UserScalars& settings) {
@@ -48,6 +55,7 @@ inline void apply(UserScalars& settings, int index) {
     settings.loraCR = preset.cr;
     settings.loraTxPower = preset.txPower;
     settings.loraPreamble = preset.preamble;
+    RadioRegions::enforce(settings);
 }
 
 } // namespace RadioPresets

@@ -4,6 +4,7 @@
 #include "config/BoardConfig.h"
 #include "radio/RadioFrequency.h"
 #include "radio/RadioBandwidth.h"
+#include "radio/RadioRegions.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
@@ -156,6 +157,8 @@ void UserConfig::sanitizeScalars(UserScalars& settings) {
     settings.loraCR = constrain(settings.loraCR, 5, 8);
     settings.loraTxPower = constrain(settings.loraTxPower, -9, 22);
     settings.loraPreamble = constrain(settings.loraPreamble, 6L, 65L);
+    // Hard regional limits, e.g. India's 200 kHz bandwidth, survive manual edits.
+    RadioRegions::enforce(settings);
     settings.batteryDisplay = constrain((int)settings.batteryDisplay,
         (int)BATTERY_DISPLAY_PERCENT, (int)BATTERY_DISPLAY_BAR);
     settings.batteryModel = constrain((int)settings.batteryModel,

@@ -11,6 +11,7 @@
 #include "config/UserConfig.h"
 #include "radio/RadioFrequency.h"
 #include "radio/RadioBandwidth.h"
+#include "radio/RadioRegions.h"
 #include "radio/RadioPresets.h"
 #include "screens/LvTimezoneScreen.h"  // For TIMEZONE_TABLE
 #include "audio/AudioNotify.h"
@@ -419,8 +420,7 @@ void LvSettingsScreen::buildItems() {
         };
         regionItem.setter = [&s](int v) {
             if (v < 0 || v >= REGION_COUNT) return; // Keep the displayed Custom value.
-            s.radioRegion = v;
-            s.loraFrequency = REGION_FREQ[v];
+            RadioRegions::apply(s, v);
         };
         regionItem.minVal = 0; regionItem.maxVal = REGION_COUNT - 1; regionItem.step = 1;
         regionItem.enumLabels.clear();

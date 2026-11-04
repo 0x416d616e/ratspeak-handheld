@@ -5,6 +5,7 @@
 #include "config/AnnounceInterval.h"
 #include "radio/RadioFrequency.h"
 #include "radio/RadioPresets.h"
+#include "radio/RadioRegions.h"
 #include "radio/RadioSettings.h"
 #include "util/DisplayText.h"
 #include "storage/MessageStore.h"
@@ -1329,8 +1330,7 @@ void SettingsScreen::applyRadioRegion(int region) {
     if (_config && (_config->settingsPending() || _radioApplyPending)) { showToast("Settings apply pending"); return; }
     if (!_config || region < 0 || region >= REGION_COUNT) return;
     UserScalars next = _config->settings();
-    next.radioRegion = uint8_t(region);
-    next.loraFrequency = REGION_FREQ[region];
+    RadioRegions::apply(next, region);
     applyScalars(next);
     const Row selected = selectedRow();
     rebuildMenu(); restoreRow(selected);

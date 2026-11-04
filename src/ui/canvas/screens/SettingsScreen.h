@@ -69,11 +69,11 @@ private:
     enum SubMenu { MENU_MAIN, MENU_RADIO, MENU_WIFI, MENU_TCP, MENU_SDCARD,
                    MENU_DISPLAY, MENU_AUDIO, MENU_ABOUT, MENU_WIFI_SCAN,
                    MENU_PROPAGATION, MENU_PROPAGATION_CHOICE, MENU_PROPAGATION_NODES, MENU_VOICE,
-                   MENU_IDENTITY, MENU_RADIO_PRESETS, MENU_WIFI_MODE, MENU_COUNT };
+                   MENU_IDENTITY, MENU_RADIO_PRESETS, MENU_WIFI_MODE, MENU_RADIO_REGIONS, MENU_COUNT };
 
     // Routing lives alongside each visible row, independent of its position.
     // The largest list is the bounded propagation snapshot: two rows per node.
-    enum class RowAction : uint8_t { Info, OpenMenu, Back, Edit, Preset,
+    enum class RowAction : uint8_t { Info, OpenMenu, Back, Edit, Preset, Region,
         WiFiMode, WiFiConnection, WiFiScan, WiFiNetwork, AutoDiscover,
         TCPAdd, TCPToggle, AudioToggle, SDInitialize, SDWipe, FactoryReset,
         Voice, Propagation, Heap, Uptime };
@@ -108,6 +108,7 @@ private:
     void buildMainMenu();
     void buildRadioMenu();
     void buildRadioPresetsMenu();
+    void buildRadioRegionsMenu();
     void buildWiFiMenu();
     void buildWiFiModeMenu();
     void buildTCPMenu();
@@ -144,6 +145,7 @@ private:
     void releaseCandidate();
     void releaseEditor();
     void applyRadioPreset(int preset);
+    void applyRadioRegion(int region);
     void finishRadioApply(RadioApply result);
     void factoryReset();
     void requestMaintenance(handheld::Operation operation);

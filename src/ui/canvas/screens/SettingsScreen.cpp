@@ -183,6 +183,7 @@ void SettingsScreen::rebuildMenu() {
         case MENU_MAIN: buildMainMenu(); break;
         case MENU_RADIO: buildRadioMenu(); break;
         case MENU_RADIO_PRESETS: buildRadioPresetsMenu(); break;
+        case MENU_RADIO_REGIONS: buildRadioRegionsMenu(); break;
         case MENU_WIFI: buildWiFiMenu(); break;
         case MENU_WIFI_MODE: buildWiFiModeMenu(); break;
         case MENU_TCP: buildTCPMenu(); break;
@@ -213,7 +214,7 @@ void SettingsScreen::backMenu() {
         _scanVisible = false;
         std::vector<WiFiNetwork>().swap(_scanResults);
     }
-    _subMenu = child == MENU_RADIO_PRESETS ? MENU_RADIO :
+    _subMenu = child == MENU_RADIO_PRESETS || child == MENU_RADIO_REGIONS ? MENU_RADIO :
         child == MENU_TCP || child == MENU_WIFI_SCAN || child == MENU_WIFI_MODE ? MENU_WIFI :
         child == MENU_PROPAGATION_NODES ? MENU_PROPAGATION_CHOICE :
         child == MENU_PROPAGATION_CHOICE ? MENU_PROPAGATION : MENU_MAIN;
@@ -244,6 +245,10 @@ void SettingsScreen::buildRadioMenu() {
     snprintf(buf, sizeof(buf), "%s: %s", (_radioApplyPending || _config->settingsPending()) ? "Pending" : _candidate ? "Unsaved" : "Saved", RadioPresets::name(s));
     addRow(buf);
     addRow("Link Presets", RowAction::OpenMenu, MENU_RADIO_PRESETS);
+    const int region = constrain((int)s.radioRegion, 0, REGION_COUNT - 1);
+    snprintf(buf, sizeof(buf), "Region: %s",
+             s.loraFrequency == REGION_FREQ[region] ? REGION_LABELS[region] : "Custom");
+    addRow(buf, RowAction::OpenMenu, MENU_RADIO_REGIONS);
 
     snprintf(buf, sizeof(buf), "Frequency: %lu Hz", (unsigned long)s.loraFrequency);
     addRow(buf, RowAction::Edit, 0);
@@ -272,6 +277,21 @@ void SettingsScreen::buildRadioPresetsMenu() {
                  i == activeIdx ? ">" : " ", RadioPresets::values[i].name);
         addRow(label, RowAction::Preset, uint8_t(i), i == activeIdx ? Theme::PRIMARY : 0);
     }
+    addRow("< Back", RowAction::Back);
+}
+
+void SettingsScreen::buildRadioRegionsMenu() {
+    clearRows();
+    if (!_config) return;
+    const auto& s = settingsView();
+    for (int i = 0; i < REGION_COUNT; ++i) {
+        // Active only while the frequency still matches the region default.
+        const bool active = s.radioRegion == i && s.loraFrequency == REGION_FREQ[i];
+        char label[40];
+        snprintf(label, sizeof(label), "%s[%s]", active ? ">" : " ", REGION_LABELS[i]);
+        addRow(label, RowAction::Region, uint8_t(i), active ? Theme::PRIMARY : 0);
+    }
+    addRow(handheld::ui::radio_settings::LocalRulesShort, RowAction::Info, 0, Theme::MUTED);
     addRow("< Back", RowAction::Back);
 }
 
@@ -942,7 +962,7 @@ void SettingsScreen::render(M5Canvas& canvas) {
     const char* headers[] = {"SETTINGS", "LORA", "WI-FI & TCP", "TCP CONNECTIONS",
                              "STORAGE", "DISPLAY", "ALERTS", "DEVICE", "WIFI SCAN",
                              "PROPAGATION", "MANUAL NODE", "PROPAGATION NODES", "VOICE MESSAGES",
-                             "IDENTITY", "LINK PRESETS", "WI-FI MODE"};
+                             "IDENTITY", "LINK PRESETS", "WI-FI MODE", "REGION PRESETS"};
     static_assert(sizeof(headers) / sizeof(headers[0]) == MENU_COUNT,
                   "Every settings menu needs a visible header");
     const int headerH = Theme::SECTION_HEADER_H;
@@ -1131,6 +1151,7 @@ bool SettingsScreen::handleKey(const KeyEvent& event) {
             case RowAction::Edit:
                 startEditing(selected.value, getCurrentValue(_subMenu, selected.value)); break;
             case RowAction::Preset: applyRadioPreset(selected.value); break;
+            case RowAction::Region: applyRadioRegion(selected.value); break;
             case RowAction::WiFiMode: {
                 // One save per explicit choice; reselecting the active mode only returns.
                 UserScalars next = _config->settings();
@@ -1258,7 +1279,8 @@ void SettingsScreen::applyCommitted(bool refreshCandidate) {
 
 void SettingsScreen::finishRadioApply(RadioApply result) {
     _radioApplyPending = result == RadioApply::Pending;
-    if (_active && (_subMenu == MENU_RADIO || _subMenu == MENU_RADIO_PRESETS)) {
+    if (_active && (_subMenu == MENU_RADIO || _subMenu == MENU_RADIO_PRESETS ||
+                    _subMenu == MENU_RADIO_REGIONS)) {
         const Row selected = selectedRow();
         rebuildMenu(); restoreRow(selected);
     }
@@ -1298,6 +1320,18 @@ void SettingsScreen::applyRadioPreset(int preset) {
     _presetAnnouncePending = true;
     const bool saved = applyScalars(next);
     if (!saved && !_config->settingsPending() && !_radioApplyPending) _presetAnnouncePending = false;
+    const Row selected = selectedRow();
+    rebuildMenu(); restoreRow(selected);
+}
+
+// Explicitly choosing a region restores its default frequency.
+void SettingsScreen::applyRadioRegion(int region) {
+    if (_config && (_config->settingsPending() || _radioApplyPending)) { showToast("Settings apply pending"); return; }
+    if (!_config || region < 0 || region >= REGION_COUNT) return;
+    UserScalars next = _config->settings();
+    next.radioRegion = uint8_t(region);
+    next.loraFrequency = REGION_FREQ[region];
+    applyScalars(next);
     const Row selected = selectedRow();
     rebuildMenu(); restoreRow(selected);
 }

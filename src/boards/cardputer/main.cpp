@@ -39,7 +39,7 @@
 #include "runtime/AnnounceScheduler.h"
 #include "transport/RnsAutoInterface.h"
 #include "config/UserConfig.h"
-#include "radio/RadioRegions.h"
+#include "radio/RadioPolicyConfig.h"
 #include "config/SettingsTransaction.h"
 #include "config/NetworkSettings.h"
 #include "screens/NodesScreen.h"
@@ -74,7 +74,7 @@ SET_LOOP_TASK_STACK_SIZE(16384);  // 16KB — needed for Ed25519 crypto in RNS b
 // Cardputer ADV display uses Arduino HSPI/SPI3 via M5GFX. Keep the external
 // LoRa/SD bus on FSPI/SPI2 so display refreshes cannot reconfigure radio SPI.
 SPIClass loraSPI(FSPI);
-SX1262 radio(&loraSPI,
+SX1262 loraRadio(&loraSPI,
     LORA_CS, LORA_SCK, LORA_MOSI, LORA_MISO,
     LORA_RST, LORA_IRQ, LORA_BUSY, LORA_RXEN,
     LORA_HAS_TCXO, LORA_DIO2_AS_RF_SWITCH);
@@ -91,7 +91,7 @@ LXMFManager lxmf;
 // Announce, LXMF, Link and Resource operations require protocol readiness.
 ProtocolRuntime protocolRuntime;
 ProtocolBackend* backend = &protocolRuntime;
-LoRaInterface rustLoraIface(&radio);  // pump-owned raw driver (id 0)
+LoRaInterface rustLoraIface(&loraRadio);  // pump-owned raw driver (id 0)
 IdentityManager identityMgr;
 AnnounceManager* announceManager = nullptr;
 TcpClientSet tcpClients;
@@ -317,7 +317,7 @@ void onHotkeyAnnounce() {
     Serial.println("[HOTKEY] Force announce");
     announceWithName();
 }
-static handheld::DeviceDiagnostics diagnostics(radio, rustLoraIface, *backend, announceManager,
+static handheld::DeviceDiagnostics diagnostics(loraRadio, rustLoraIface, *backend, announceManager,
     radioOnline, "Cardputer Adv", "RSCARDPUTER-LXMF-TEST:", "RSCARDPUTER_TEST_1234567890",
     []() { announceWithName(false); });
 void onHotkeyDiag() { diagnostics.printDiagnostics(); }
@@ -588,16 +588,17 @@ void setup() {
     pinMode(LORA_CS, OUTPUT); digitalWrite(LORA_CS, HIGH);
     pinMode(SD_CS, OUTPUT); digitalWrite(SD_CS, HIGH);
     loraSPI.begin(LORA_SCK, LORA_MISO, LORA_MOSI);
-    if (flashReady && enableCapLoRaRfSwitch() && radio.begin(LORA_DEFAULT_FREQ)) {
-        radio.setSpreadingFactor(LORA_DEFAULT_SF);
-        radio.setSignalBandwidth(LORA_DEFAULT_BW);
-        radio.setCodingRate4(LORA_DEFAULT_CR);
-        radio.setTxPower(LORA_DEFAULT_TX_POWER);
-        radio.setPreambleLength(LORA_DEFAULT_PREAMBLE);
-        radio.receive();
-        radioOnline = radio.isRadioOnline();
+    if (flashReady && enableCapLoRaRfSwitch() && loraRadio.begin(LORA_DEFAULT_FREQ)) {
+        loraRadio.setSpreadingFactor(LORA_DEFAULT_SF);
+        loraRadio.setSignalBandwidth(LORA_DEFAULT_BW);
+        loraRadio.setCodingRate4(LORA_DEFAULT_CR);
+        loraRadio.setTxPower(LORA_DEFAULT_TX_POWER);
+        loraRadio.setPreambleLength(LORA_DEFAULT_PREAMBLE);
+        loraRadio.receive();
+        radioOnline = loraRadio.isRadioOnline();
         ui.statusBar().setLoRaOnline(radioOnline);
-        Serial.println(radioOnline ? "[RADIO] SX1262 online at 915 MHz" : "[RADIO] Configuration failed");
+        // Board defaults until the saved link is applied after settings load.
+        Serial.println(radioOnline ? "[RADIO] SX1262 online" : "[RADIO] Configuration failed");
         bootScreen.setProgress(0.6f, radioOnline ? "Radio online" : "Radio: OFFLINE");
     } else {
         Serial.println("[RADIO] SX1262 not detected!");
@@ -695,7 +696,12 @@ void setup() {
             ui.render(); for (;;) delay(20);
         }
         protocolRuntime.pump().attachLoRa(&rustLoraIface);
-        if (radioOnline) applyRadioSettings(radio, userConfig.settings());
+        if (radioOnline) {
+            applyRadioSettings(loraRadio, userConfig.settings());
+            char link[40];
+            formatRadioLink(userConfig.settings(), link, sizeof(link));
+            Serial.printf("[RADIO] %s: %s\n", radioRegionOf(userConfig.settings()).label, link);
+        }
         if (radioOnline && userConfig.settings().loraEnabled) rustLoraIface.start();
         Serial.printf("[BOOT] Rust transport up: dest=%s\n",
                       protocolRuntime.destinationHashHex().c_str());
@@ -816,7 +822,7 @@ void setup() {
 
     // Set up screens
     homeScreen.setBackend(backend);
-    homeScreen.setRadio(&radio);
+    homeScreen.setRadio(&loraRadio);
     homeScreen.setUserConfig(&userConfig);
     homeScreen.setAnnounceCallback([]() {
         return announceWithName() == ProtocolBackend::AnnounceResult::Sent;
@@ -872,7 +878,7 @@ void setup() {
     settingsScreen.setSDStore(&sdStore);
     settingsScreen.setMessageStore(&messageStore);
     settingsScreen.setRadioApply([](const UserSettings& settings, bool accepting) {
-        return applyLiveRadioSettings(radio, rustLoraIface, settings, accepting);
+        return applyLiveRadioSettings(loraRadio, rustLoraIface, settings, accepting);
     });
     settingsScreen.setAudio(&audio);
     settingsScreen.setPower(&power);
@@ -917,10 +923,14 @@ void setup() {
         if (userConfig.settingsPending() || tzIdx < 0 || tzIdx >= TIMEZONE_COUNT) return;
         UserScalars next = userConfig.settings();
         next.timezoneIdx = uint8_t(tzIdx);
-        // Region suggestion is only this explicit first-setup choice. A later
-        // timezone edit/recovery preserves the established manual frequency.
+        // First setup applies the city's region with its default frequency,
+        // link preset and TX power. A later timezone choice keeps the region.
+        // The save's applyCommitted() retunes the live radio, and the boot
+        // flow waits for that apply before the name step or home.
         if (!next.timezoneSet) {
-            RadioRegions::apply(next, TIMEZONE_TABLE[tzIdx].radioRegion);
+            const uint8_t region = radio::regionValue(TIMEZONE_TABLE[tzIdx].radioRegion);
+            if (selectRadioRegion(next, region).verdict != radio::Verdict::Refused)
+                Serial.printf("[BOOT] Radio region: %s\n", radioRegionOf(next).label);
         }
         next.timezoneSet = true;
         saveCardScalars(next, CardSettingsStep::Timezone);

@@ -13,6 +13,7 @@
 #include "config/BoardConfig.h"
 #include "config/ConfigMemory.h"
 #include "config/PropagationSettings.h"
+#include "radio/RadioRegions.h"
 #include "voice/VoiceTypes.h"
 
 namespace handheld::config { class JsonWriter; }
@@ -58,7 +59,7 @@ struct TCPEndpoint {
 // and persisted without cloning credentials, endpoints or names.
 struct UserScalars {
     // Radio
-    uint8_t radioRegion = REGION_AMERICAS;
+    uint8_t radioRegion = radio::regionValue(radio::RegionId::Americas);  // Permanent IDs: RadioRegions.h
     uint32_t loraFrequency = LORA_DEFAULT_FREQ;
     uint8_t loraSF = LORA_DEFAULT_SF;
     uint32_t loraBW = LORA_DEFAULT_BW;

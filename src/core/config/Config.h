@@ -91,23 +91,8 @@ inline constexpr char RATSPEAK_HUB_HOST[] = "rns.ratspeak.org";
 #define SCREEN_OFF_TIMEOUT_MS   60000
 #define SCREEN_DIM_BRIGHTNESS   64
 
-// --- Radio Region Presets (defaults, not limits on manual tuning) ---
-enum RadioRegion : uint8_t {
-    REGION_AMERICAS  = 0,  // 915 MHz (902-928 ISM)
-    REGION_EUROPE    = 1,  // 868 MHz (863-870)
-    REGION_AUSTRALIA = 2,  // 915 MHz (915-928)
-    REGION_ASIA      = 3,  // 923 MHz (AS923)
-    REGION_INDIA     = 4,  // 866 MHz (IN865: 865-867)
-    REGION_COUNT     = 5
-};
-
-static constexpr uint32_t REGION_FREQ[REGION_COUNT] = {
-    915000000, 868000000, 915000000, 923000000, 866000000
-};
-
-static const char* const REGION_LABELS[REGION_COUNT] = {
-    "Americas (915)", "Europe (868)", "Australia (915)", "Asia (923)", "India (866)"
-};
+// Radio regions and link presets live in radio/RadioRegions.h and
+// radio/RadioPresets.h; radio/RadioPolicy.h decides what a link may be.
 
 // --- Serial Debug ---
 #define SERIAL_BAUD  115200

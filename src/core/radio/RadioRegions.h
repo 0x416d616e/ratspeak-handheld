@@ -1,77 +1,113 @@
 #pragma once
 
-#include "config/Config.h"
-#include "config/UserConfig.h"
+#include <stddef.h>
+#include <stdint.h>
+#include "radio/RadioPresets.h"
 
-// Region presets and the regional limits they carry.
+// Radio regions: the single source of truth for each region's band, power
+// limit, bandwidth limit, default frequency and default link preset.
 //
-// Most regions only choose a default center frequency. A region with limits
-// also applies a full link profile when chosen, and keeps the link inside its
-// legal envelope while the radio stays in that region's band: link presets and
-// manual edits are clamped instead of silently going out of bounds.
-namespace RadioRegions {
+// The values summarise each region's licence-exempt rules as best we know
+// them; they are not legal advice. Duty-cycle limits are shown to the user but
+// not enforced, because the firmware does not account airtime yet.
+namespace radio {
 
-struct Limits {
-    uint32_t minHz;        // Band edges; limits apply while tuned inside them
-    uint32_t maxHz;
-    uint32_t maxBandwidth; // Widest allowed LoRa bandwidth in Hz
-    int8_t maxTxPower;     // Highest allowed radio output in dBm
+// Persisted as user.json "radio_region". Permanent: never renumber or reuse.
+enum class RegionId : uint8_t {
+    Americas = 0,
+    Europe = 1,
+    AuNz = 2,
+    Asia = 3,
+    India = 4,
+    Custom = 254,  // Developer only: SX1262 hardware limits, no regional rules.
 };
 
-// India, IN865 (WPC licence-exempt band): 865-867 MHz, at most 1 W (30 dBm)
-// transmitter power and 200 kHz carrier bandwidth. 125 kHz is the widest
-// standard LoRa bandwidth under 200 kHz. The SX1262 tops out at 22 dBm, so
-// the power ceiling is the radio's own.
-inline constexpr Limits INDIA_LIMITS = {865000000UL, 867000000UL, 125000UL, 22};
+enum class PowerRef : uint8_t { Conducted, Erp, Eirp };
 
-// The India link profile is Medium Fast (the device default) narrowed to
-// 125 kHz, so it still reads as Medium Fast in the link preset list.
-inline constexpr uint8_t INDIA_SF = 9;
-inline constexpr uint32_t INDIA_BW = 125000UL;
-inline constexpr uint8_t INDIA_CR = 5;
-inline constexpr int8_t INDIA_TX_POWER = 17;
-inline constexpr long INDIA_PREAMBLE = 18;
+struct SubBand {
+    uint32_t minHz;
+    uint32_t maxHz;          // The whole signal (centre +/- bandwidth/2) must fit.
+    int8_t limitDbm;         // Legal power limit, measured as `ref` states.
+    PowerRef ref;
+    uint16_t dutyPermille;   // 1000 = no limit. Shown, not enforced.
+};
 
-inline constexpr const Limits* limits(uint8_t region) {
-    return region == REGION_INDIA ? &INDIA_LIMITS : nullptr;
-}
+struct Region {
+    RegionId id;
+    const char* label;       // ASCII, short enough for a settings row.
+    const SubBand* bands;    // nullptr: no regional rules (Custom).
+    uint8_t bandCount;
+    uint32_t defaultHz;      // Fits every preset the region allows (host test).
+    uint32_t maxBandwidthHz;
+    PresetId defaultPreset;
+};
 
-// The limits that apply to these settings now, if any: the region has limits
-// and the radio is tuned inside that region's band.
-inline const Limits* activeLimits(const UserScalars& s) {
-    const Limits* l = limits(s.radioRegion);
-    if (!l || s.loraFrequency < l->minHz || s.loraFrequency > l->maxHz) return nullptr;
-    return l;
-}
+// FCC Part 15: 902-928 MHz, 1 W conducted.
+inline constexpr SubBand AMERICAS_BANDS[] = {
+    {902000000UL, 928000000UL, 30, PowerRef::Conducted, 1000},
+};
 
-// The bandwidth a link preset would use under these settings' limits.
-inline uint32_t allowedBandwidth(const UserScalars& s, uint32_t hz) {
-    const Limits* l = activeLimits(s);
-    return l && hz > l->maxBandwidth ? l->maxBandwidth : hz;
-}
+// ERC Rec 70-03 Annex 1 / EN 300 220 sub-bands. 865-868.6 merges h1.4 and
+// h1.5 (both 25 mW ERP, 1%). The 500 mW band 47b tier needs adaptive power
+// control, which the firmware lacks, so it is not offered.
+inline constexpr SubBand EUROPE_BANDS[] = {
+    {863000000UL, 865000000UL, 14, PowerRef::Erp, 1},
+    {865000000UL, 868600000UL, 14, PowerRef::Erp, 10},
+    {868700000UL, 869200000UL, 14, PowerRef::Erp, 1},
+    {869400000UL, 869650000UL, 27, PowerRef::Erp, 100},
+    {869700000UL, 870000000UL, 14, PowerRef::Erp, 10},
+};
 
-// Clamp settings into the active region's limits. Safe to call repeatedly.
-inline void enforce(UserScalars& s) {
-    const Limits* l = activeLimits(s);
-    if (!l) return;
-    if (s.loraBW > l->maxBandwidth) s.loraBW = l->maxBandwidth;
-    if (s.loraTxPower > l->maxTxPower) s.loraTxPower = l->maxTxPower;
-}
+// Australia LIPD class licence: 915-928 MHz, 1 W EIRP. New Zealand limits
+// 915-921 MHz to 3 mW EIRP, so the default sits in 921-928 MHz.
+inline constexpr SubBand AUNZ_BANDS[] = {
+    {915000000UL, 928000000UL, 30, PowerRef::Eirp, 1000},
+};
 
-// Explicitly choosing a region restores its default frequency, and for a
-// region with limits, its full compliant link profile.
-inline void apply(UserScalars& s, int region) {
-    if (region < 0 || region >= REGION_COUNT) return;
-    s.radioRegion = uint8_t(region);
-    s.loraFrequency = REGION_FREQ[region];
-    if (region == REGION_INDIA) {
-        s.loraSF = INDIA_SF;
-        s.loraBW = INDIA_BW;
-        s.loraCR = INDIA_CR;
-        s.loraTxPower = INDIA_TX_POWER;
-        s.loraPreamble = INDIA_PREAMBLE;
+// AS923 920-925 MHz at the lowest common limit (Singapore, 100 mW).
+inline constexpr SubBand ASIA_BANDS[] = {
+    {920000000UL, 925000000UL, 20, PowerRef::Conducted, 1000},
+};
+
+// India G.S.R. 853(E) (2021), general tier: 25 mW ERP, 1% duty cycle. The
+// 500 mW tier requires adaptive power control, which the firmware lacks. The
+// band stays inside 865-867 MHz, which the older 2005 rule also allowed, and
+// bandwidth stays at or below 125 kHz, under every tier's 200 kHz cap.
+inline constexpr SubBand INDIA_BANDS[] = {
+    {865000000UL, 867000000UL, 14, PowerRef::Erp, 10},
+};
+
+template <size_t N>
+constexpr uint8_t bandCount(const SubBand (&)[N]) { return static_cast<uint8_t>(N); }
+
+// Display order. Custom stays last: the settings lists drop it outside
+// Developer Mode.
+inline constexpr Region REGIONS[] = {
+    {RegionId::Americas, "Americas 902-928", AMERICAS_BANDS, bandCount(AMERICAS_BANDS),
+     915000000UL, 500000UL, PresetId::MediumFast},
+    {RegionId::Europe, "Europe 863-870", EUROPE_BANDS, bandCount(EUROPE_BANDS),
+     868000000UL, 500000UL, PresetId::MediumFast},
+    {RegionId::AuNz, "Aus/NZ 915-928", AUNZ_BANDS, bandCount(AUNZ_BANDS),
+     925875000UL, 500000UL, PresetId::MediumFast},
+    {RegionId::Asia, "Asia 920-925", ASIA_BANDS, bandCount(ASIA_BANDS),
+     923000000UL, 500000UL, PresetId::MediumFast},
+    // 866.6 MHz keeps a 125 kHz signal clear of Meshtastic India's default
+    // channels (865.5-866.5 MHz) and of the 2 W RFID channels at 866.3 and
+    // 866.9 MHz.
+    {RegionId::India, "India 865-867", INDIA_BANDS, bandCount(INDIA_BANDS),
+     866600000UL, 125000UL, PresetId::LiteFast},
+    {RegionId::Custom, "Custom", nullptr, 0,
+     0, 500000UL, PresetId::MediumFast},
+};
+inline constexpr int REGION_COUNT = sizeof(REGIONS) / sizeof(REGIONS[0]);
+
+inline constexpr const Region* findRegion(uint8_t id) {
+    for (const auto& region : REGIONS) {
+        if (static_cast<uint8_t>(region.id) == id) return &region;
     }
-    enforce(s);
+    return nullptr;
 }
 
-} // namespace RadioRegions
+inline constexpr uint8_t regionValue(RegionId id) { return static_cast<uint8_t>(id); }
+
+} // namespace radio

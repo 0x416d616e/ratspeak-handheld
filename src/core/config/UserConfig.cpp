@@ -2,9 +2,7 @@
 #include "ConfigJsonWriter.h"
 #include "config/AnnounceInterval.h"
 #include "config/BoardConfig.h"
-#include "radio/RadioFrequency.h"
-#include "radio/RadioBandwidth.h"
-#include "radio/RadioRegions.h"
+#include "radio/RadioPolicyConfig.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
@@ -16,6 +14,9 @@
 #endif
 
 namespace {
+// Marks records whose radio_region uses the permanent IDs in RadioRegions.h.
+constexpr int RADIO_SCHEMA = 2;
+
 bool sameConfigString(const String& left, const String& right) {
     return left.length() == right.length() && (!left.length() ||
         !std::memcmp(left.c_str(), right.c_str(), left.length()));
@@ -146,19 +147,8 @@ void UserConfig::swap(UserConfig& other) noexcept {
 }
 
 void UserConfig::sanitizeScalars(UserScalars& settings) {
-    if (settings.radioRegion >= REGION_COUNT) settings.radioRegion = REGION_AMERICAS;
-    // Region selects a default; it must not override a supported manual tune,
-    // including after the developer controls are locked again.
-    if (!loRaFrequencyBand(settings.loraFrequency)) {
-        settings.loraFrequency = REGION_FREQ[constrain((int)settings.radioRegion, 0, REGION_COUNT - 1)];
-    }
-    settings.loraSF = constrain(settings.loraSF, 5, 12);
-    settings.loraBW = RadioBandwidth::normalize(settings.loraBW);
-    settings.loraCR = constrain(settings.loraCR, 5, 8);
-    settings.loraTxPower = constrain(settings.loraTxPower, -9, 22);
-    settings.loraPreamble = constrain(settings.loraPreamble, 6L, 65L);
-    // Hard regional limits, e.g. India's 200 kHz bandwidth, survive manual edits.
-    RadioRegions::enforce(settings);
+    // The region's band, bandwidth and power limits; hardware limits for Custom.
+    conformRadio(settings);
     settings.batteryDisplay = constrain((int)settings.batteryDisplay,
         (int)BATTERY_DISPLAY_PERCENT, (int)BATTERY_DISPLAY_BAR);
     settings.batteryModel = constrain((int)settings.batteryModel,
@@ -245,7 +235,6 @@ bool UserConfig::parseJson(const char* json, size_t length, bool persisted, bool
             if (namePending && !nameBound) return false;
         }
 
-        parsed.radioRegion   = constrain((int)(doc["radio_region"] | 0), 0, REGION_COUNT - 1);
         parsed.loraFrequency = doc["lora_freq"] | (long)LORA_DEFAULT_FREQ;
         // Clamp in the JSON reader's integer type before narrowing to stored fields.
         parsed.loraSF        = constrain(doc["lora_sf"] | (int)LORA_DEFAULT_SF, 5, 12);
@@ -254,6 +243,20 @@ bool UserConfig::parseJson(const char* json, size_t length, bool persisted, bool
         parsed.loraTxPower   = constrain(doc["lora_txp"] | (int)LORA_DEFAULT_TX_POWER, -9, 22);
         parsed.loraPreamble  = doc["lora_pre"]  | (long)LORA_DEFAULT_PREAMBLE;
         parsed.loraEnabled   = doc["lora_on"]   | true;
+        // Records saved before regional limits have no radio_schema. Migration
+        // keeps their link working; a link outside its old region becomes Custom.
+        const int storedRegion = doc["radio_region"] | 0;
+        if (doc["radio_schema"].isNull()) {
+            radio::Link link = radioLink(parsed);
+            radio::policy::migrateLegacy(link, storedRegion);
+            parsed.radioRegion = link.region;
+            parsed.loraFrequency = link.hz;
+        } else {
+            const bool known = storedRegion >= 0 && storedRegion <= 255 &&
+                               radio::findRegion(static_cast<uint8_t>(storedRegion));
+            parsed.radioRegion = known ? static_cast<uint8_t>(storedRegion)
+                                       : radio::regionValue(radio::RegionId::Custom);
+        }
 
         // WiFi mode — migrate from legacy wifi_enabled bool
         int mode = doc["wifi_mode"] | -1;
@@ -403,6 +406,7 @@ bool UserConfig::parseJson(const char* json, size_t length, bool persisted, bool
 void UserConfig::writeJson(handheld::config::JsonWriter& writer, bool persisted, const UserScalars& scalars) const {
     writer.object();
     writer.member("radio_region", scalars.radioRegion);
+    writer.member("radio_schema", RADIO_SCHEMA);
     writer.member("lora_freq", scalars.loraFrequency);
     writer.member("lora_sf", scalars.loraSF);
     writer.member("lora_bw", scalars.loraBW);

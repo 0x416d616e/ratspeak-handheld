@@ -88,7 +88,7 @@ void LvTimezoneScreen::createUI(lv_obj_t* parent) {
                                 LV_LABEL_LONG_DOT);
     lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 24);
 
-    lv_obj_t* sub = makeLabel(parent, "Pick the nearest city for time and radio-region hints.",
+    lv_obj_t* sub = makeLabel(parent, "Pick the nearest city to set the time and radio region.",
                               &lv_font_rsdeck_12, Theme::TEXT_PRIMARY,
                               280, LV_TEXT_ALIGN_CENTER);
     lv_obj_align(sub, LV_ALIGN_TOP_MID, 0, 48);

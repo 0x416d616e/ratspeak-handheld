@@ -1,7 +1,7 @@
 #pragma once
 
-// Presets set power without regard to region, and nothing limits airtime.
+// Region limits come from radio/RadioRegions.h; nothing limits airtime yet,
+// so the settings screens remind the user of local rules.
 namespace handheld::ui::radio_settings {
-inline constexpr const char* LocalRules = "Follow local rules for frequency, power and duty cycle.";
 inline constexpr const char* LocalRulesShort = "Follow local radio rules";
 }

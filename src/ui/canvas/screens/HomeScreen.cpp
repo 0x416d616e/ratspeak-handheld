@@ -1,7 +1,7 @@
 #include "HomeScreen.h"
 #include "Theme.h"
 #include "config/Config.h"
-#include "radio/RadioPresets.h"
+#include "radio/RadioPolicyConfig.h"
 #include "protocol/ProtocolBackend.h"
 #include "util/DisplayName.h"
 #include <algorithm>
@@ -77,7 +77,7 @@ void HomeScreen::render(M5Canvas& canvas) {
 
     if (_radio && _radio->isRadioOnline()) {
         if (_userConfig) {
-            const char* preset = RadioPresets::name(_userConfig->settings());
+            const char* preset = radioPresetName(_userConfig->settings());
             Theme::useUiFont(canvas);
             canvas.setTextColor(Theme::TEXT_PRIMARY);
             char headline[48];
@@ -97,8 +97,9 @@ void HomeScreen::render(M5Canvas& canvas) {
         Theme::useSmallFont(canvas);
         canvas.setTextColor(Theme::MUTED);
         canvas.setCursor(cardX + pad, cardY + detailY);
-        canvas.printf("%.1f MHz  TX:%d dBm  CR:%d  P:%d L:%d",
-            _radio->getFrequency() / 1000000.0,
+        char mhz[16];
+        radio::policy::formatMhz(_radio->getFrequency(), mhz, sizeof(mhz));
+        canvas.printf("%s MHz TX:%d dBm CR:%d P:%d L:%d", mhz,
             _radio->getTxPower(), _radio->getCodingRate4(),
             _backend ? (int)_backend->pathCount() : 0,
             _backend ? (int)_backend->linkCount() : 0);

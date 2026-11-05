@@ -145,7 +145,8 @@ private:
     void releaseCandidate();
     void releaseEditor();
     void applyRadioPreset(int preset);
-    void applyRadioRegion(int region);
+    void applyRadioRegion(uint8_t region);
+    bool saveRadioChange(const UserScalars& next, const char* note, bool announce);
     void finishRadioApply(RadioApply result);
     void factoryReset();
     void requestMaintenance(handheld::Operation operation);
@@ -159,7 +160,10 @@ private:
     SDStore* _sdStore = nullptr;
     const MessageStore* _messages = nullptr;
     RadioApplyCallback _radioApply = nullptr;
-    bool _radioApplyPending = false, _presetAnnouncePending = false;
+    // A preset or region choice announces once the radio applies it; a side
+    // effect note (e.g. TX power capped) waits for the same apply result.
+    bool _radioApplyPending = false, _linkAnnouncePending = false;
+    const char* _radioNote = nullptr;
     AudioNotify* _audio = nullptr;
     PowerManager* _power = nullptr;
     NetworkActions _network;
@@ -187,9 +191,10 @@ private:
     struct WiFiNetwork { String ssid; int32_t rssi; uint8_t encType; };
     std::vector<WiFiNetwork> _scanResults;
 
-    // Toast overlay
+    // Toast overlay. Composed messages live in _toastText (three notice rows).
     unsigned long _toastUntil = 0;
     const char* _toastMessage = nullptr;
+    char _toastText[112] = "";
 
     // Confirmation dialog state
     bool _confirmPending = false;

@@ -7,6 +7,7 @@
 #include "runtime/DiscoveryStartup.h"
 #include "hal/NetworkTime.h"
 #include "radio/RadioSettings.h"
+#include "radio/RadioPolicyConfig.h"
 #include "diagnostics/DeviceDiagnostics.h"
 #include "diagnostics/LvglUiSnapshot.h"
 // =============================================================================
@@ -104,9 +105,9 @@ SET_LOOP_TASK_STACK_SIZE(16384);
 SPIClass sharedSPI(FSPI);
 
 #if defined(RSM9)
-BoardRadio radio(&sharedSPI);
+BoardRadio loraRadio(&sharedSPI);
 #else
-BoardRadio radio(&sharedSPI,
+BoardRadio loraRadio(&sharedSPI,
     LORA_CS, SPI_SCK, SPI_MOSI, SPI_MISO,
     LORA_RST, LORA_IRQ, LORA_BUSY, LORA_RXEN,
     LORA_HAS_TCXO, LORA_DIO2_AS_RF_SWITCH);
@@ -131,7 +132,7 @@ LXMFManager lxmf;
 // Announce, LXMF, Link and Resource operations require protocol readiness.
 ProtocolRuntime protocolRuntime;
 ProtocolBackend* backend = &protocolRuntime;
-LoRaInterface rustLoraIface(&radio);  // pump-owned raw driver (id 0)
+LoRaInterface rustLoraIface(&loraRadio);  // pump-owned raw driver (id 0)
 AnnounceManager* announceManager = nullptr;
 TcpClientSet tcpClients;
 UserConfig userConfig;
@@ -181,13 +182,13 @@ static void applyRadioSettingsToHardware(const UserSettings& s, const char* cont
     if (!radioOnline) return;
 
     if (!s.loraEnabled) {
-        radio.sleep();
+        loraRadio.sleep();
         Serial.printf("[%s] LoRa disabled by config\n", context);
         return;
     }
 
-    applyRadioSettings(radio, s);
-    radioOnline = radio.isRadioOnline();
+    applyRadioSettings(loraRadio, s);
+    radioOnline = loraRadio.isRadioOnline();
     Serial.printf("[%s] Radio: %lu Hz, SF%d, BW%lu, CR4/%d, %d dBm, pre=%ld\n",
                   context,
                   (unsigned long)s.loraFrequency, s.loraSF,
@@ -350,7 +351,7 @@ static void printAutoIface() {
     Serial.println("======================");
 }
 static handheld::diagnostics::RemoteUiBridge remoteUi;
-static handheld::DeviceDiagnostics deviceDiagnostics(radio, rustLoraIface, *backend, announceManager,
+static handheld::DeviceDiagnostics deviceDiagnostics(loraRadio, rustLoraIface, *backend, announceManager,
     radioOnline, DEVICE_NAME, "RSDECK-LXMF-TEST:", "RSDECK_TEST_1234567890", manualAnnounce);
 
 // =============================================================================
@@ -519,7 +520,7 @@ void handheld::lvgl_application::setup() {
     // This avoids any bus re-init dance that would invalidate device handles.
     Serial.println("[BOOT] Initializing radio...");
     if (flash.resetState() == FlashStore::ResetState::Clear &&
-        radio.begin(userConfig.settings().loraFrequency)) {
+        loraRadio.begin(userConfig.settings().loraFrequency)) {
         radioOnline = true;
         applyRadioSettingsToHardware(userConfig.settings(), "RADIO");
         Serial.printf("[RADIO] LoRa online at %lu Hz\n",
@@ -547,8 +548,8 @@ void handheld::lvgl_application::setup() {
 #if !defined(RSM9)
     // Verify radio SPI still works after SD init
     if (radioOnline) {
-        uint8_t sw_msb = radio.readRegister(0x0740);
-        uint8_t sw_lsb = radio.readRegister(0x0741);
+        uint8_t sw_msb = loraRadio.readRegister(0x0740);
+        uint8_t sw_lsb = loraRadio.readRegister(0x0741);
         Serial.printf("[BOOT] Radio SPI pre-display: syncword=0x%02X%02X %s\n",
             sw_msb, sw_lsb, (sw_msb == 0xFF && sw_lsb == 0xFF) ? "DEAD!" : "OK");
     }
@@ -581,8 +582,8 @@ void handheld::lvgl_application::setup() {
 #if !defined(RSM9)
     // Verify radio SPI survives display init
     if (radioOnline) {
-        uint8_t sw_msb = radio.readRegister(0x0740);
-        uint8_t sw_lsb = radio.readRegister(0x0741);
+        uint8_t sw_msb = loraRadio.readRegister(0x0740);
+        uint8_t sw_lsb = loraRadio.readRegister(0x0741);
         Serial.printf("[BOOT] Radio SPI post-display: syncword=0x%02X%02X %s\n",
             sw_msb, sw_lsb, (sw_msb == 0xFF && sw_lsb == 0xFF) ? "DEAD!" : "OK");
     }
@@ -808,7 +809,7 @@ void handheld::lvgl_application::setup() {
         applyRadioSettingsToHardware(userConfig.settings(), "BOOT");
         ::ui.lvStatusBar().setLoRaOnline(true);
     } else if (radioOnline) {
-        radio.sleep();
+        loraRadio.sleep();
         ::ui.lvStatusBar().setLoRaOnline(false);
         Serial.println("[BOOT] LoRa disabled by config");
     }
@@ -903,7 +904,7 @@ void handheld::lvgl_application::setup() {
 
     bootComplete = true;
 
-    radio.setYieldCallback([]() { yield(); });
+    loraRadio.setYieldCallback([]() { yield(); });
 
     serviceClient.onNotice = [](const char* message) {
         ::ui.lvStatusBar().showToast(message, 2000);
@@ -916,7 +917,7 @@ void handheld::lvgl_application::setup() {
 #if HAS_GPS
         status.gpsFix = gps.hasTimeFix();
 #endif
-        status.radio = radioOnline && radio.isRadioOnline();
+        status.radio = radioOnline && loraRadio.isRadioOnline();
         status.lora = rustLoraIface.isOnline();
         status.wifiEnabled = WiFi.getMode() != WIFI_OFF;
         status.wifi = network.connected();
@@ -924,11 +925,11 @@ void handheld::lvgl_application::setup() {
         status.autoPeers = autoIface.isOnline() ? int(autoIface.peerCount()) : -1;
         status.tcpTotal = tcpClients.size(); status.tcpUp = 0;
         for (auto* tcp : tcpClients) if (tcp && tcp->isConnected()) ++status.tcpUp;
-        status.frequency = radio.getFrequency(); status.bandwidth = radio.getSignalBandwidth();
-        status.sf = radio.getSpreadingFactor(); status.txPower = radio.getTxPower();
+        status.frequency = loraRadio.getFrequency(); status.bandwidth = loraRadio.getSignalBandwidth();
+        status.sf = loraRadio.getSpreadingFactor(); status.txPower = loraRadio.getTxPower();
     };
     deviceService.applyRadio = [](const UserSettings& settings, bool accepting) {
-        return applyLiveRadioSettings(radio, rustLoraIface, settings, accepting);
+        return applyLiveRadioSettings(loraRadio, rustLoraIface, settings, accepting);
     };
     deviceService.networkCommitted = [](const UserSettings& s, uint8_t changes) {
         network.settingsCommitted(s, changes);
@@ -1179,19 +1180,29 @@ void handheld::lvgl_application::setup() {
         }
     };
 
-    // Timezone screen done callback
+    // Timezone screen done callback. First setup also applies the city's radio
+    // region and retunes the live radio before Home; a later timezone change
+    // keeps the region and only points to it.
     lvTimezoneScreen.setDoneCallback([goHome](int tzIdx) {
         if (serviceClient.settingsPending() || tzIdx < 0 || tzIdx >= TIMEZONE_COUNT) return;
-        serviceClient.config.settings().timezoneIdx = uint8_t(tzIdx);
-        serviceClient.config.settings().timezoneSet = true;
+        auto& settings = serviceClient.config.settings();
+        const bool firstSetup = !settings.timezoneSet;
+        const uint8_t suggested = radio::regionValue(TIMEZONE_TABLE[tzIdx].radioRegion);
+        settings.timezoneIdx = uint8_t(tzIdx);
+        settings.timezoneSet = true;
+        if (firstSetup) selectRadioRegion(settings, suggested);
         lvTimezoneScreen.setSaving(true);
-        if (!serviceClient.applySettings([goHome, tzIdx](const handheld::Result& result) {
+        if (!serviceClient.applySettings([goHome, firstSetup, suggested](const handheld::Result& result) {
             lvTimezoneScreen.setSaving(false);
             if (result.outcome != handheld::Outcome::Ok) return;
             goHome();
-            if (TIMEZONE_TABLE[tzIdx].radioRegion != serviceClient.config.settings().radioRegion)
+            if (!firstSetup && suggested != serviceClient.config.settings().radioRegion)
                 ::ui.lvStatusBar().showToast("Check radio region in Settings", 3000);
-        }, false)) lvTimezoneScreen.setSaving(false);
+        }, firstSetup)) {
+            // Restore the draft, so a retry is still the first setup.
+            serviceClient.discardSettingsEdit();
+            lvTimezoneScreen.setSaving(false);
+        }
     });
 
     // Name input screen (first boot only — when no display name is set)

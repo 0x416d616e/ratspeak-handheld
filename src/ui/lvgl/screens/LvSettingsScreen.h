@@ -13,6 +13,7 @@
 #include <freertos/task.h>
 class AudioNotify;
 class Power;
+namespace radio { struct Outcome; }
 
 enum class SettingType : uint8_t {
     READONLY,
@@ -104,9 +105,9 @@ private:
     size_t _propCount = 0;
     bool _propLoading = false, _propFailed = false, _propChoicePending = false;
     handheld::propagation::SyncStatus _propStatus = handheld::propagation::SyncStatus::Off;
-    bool applyAndSave(bool rebuildItems = false);
-    void applyPreset(int presetIdx);
-    int detectPreset() const;
+    bool applyAndSave(bool rebuildItems = false, const char* note = nullptr);
+    void commitRadio(const radio::Outcome& outcome);
+    bool reshapesItems(const SettingItem& item) const;
     bool isEditable(int idx) const;
     void skipToNextEditable(int dir);
 
@@ -168,6 +169,10 @@ private:
     bool _numericTyping = false;   // true once user types digits in INTEGER edit
     bool _textEditing = false;
     String _editText;
+    // Set by a setter during commit: why it refused (settings untouched), or a
+    // note shown in place of the plain save toast. Static strings only.
+    const char* _commitRefusal = nullptr;
+    const char* _commitNote = nullptr;
     bool _confirmingInitSD = false;
     bool _confirmingWipeSD = false;
     bool _confirmingReset = false;

@@ -11,8 +11,7 @@
 #include "config/UserConfig.h"
 #include "radio/RadioFrequency.h"
 #include "radio/RadioBandwidth.h"
-#include "radio/RadioRegions.h"
-#include "radio/RadioPresets.h"
+#include "radio/RadioPolicyConfig.h"
 #include "screens/LvTimezoneScreen.h"  // For TIMEZONE_TABLE
 #include "audio/AudioNotify.h"
 #include "hal/Power.h"
@@ -159,14 +158,74 @@ void clipLabel(lv_obj_t* lbl, int width) {
     lv_label_set_long_mode(lbl, LV_LABEL_LONG_CLIP);
 }
 
-}  // namespace
+// Region choices in display order. Regions this mode cannot select follow the
+// selectable ones for display only, so a stored Custom region still reads
+// correctly outside Developer Mode.
+struct RegionChoices {
+    uint8_t ids[radio::REGION_COUNT] = {};
+    int count = 0;
+    int selectable = 0;
+};
 
-int LvSettingsScreen::detectPreset() const {
-    return _cfg ? RadioPresets::detect(_cfg->settings()) : -1;
+RegionChoices regionChoices(bool devMode) {
+    RegionChoices choices;
+    for (const bool selectable : {true, false}) {
+        for (const auto& region : radio::REGIONS) {
+            if (radio::policy::regionSelectable(region, devMode) != selectable) continue;
+            choices.ids[choices.count++] = radio::regionValue(region.id);
+        }
+        if (selectable) choices.selectable = choices.count;
+    }
+    return choices;
 }
 
-void LvSettingsScreen::applyPreset(int presetIdx) {
-    if (_cfg) RadioPresets::apply(_cfg->settings(), presetIdx);
+// Link presets the region allows, in preset order.
+struct PresetChoices {
+    radio::PresetId ids[radio::PRESET_COUNT] = {};
+    int count = 0;
+};
+
+PresetChoices presetChoices(uint8_t region) {
+    PresetChoices choices;
+    for (const auto& value : radio::PRESETS) {
+        if (radio::policy::presetAllowed(region, value.id)) choices.ids[choices.count++] = value.id;
+    }
+    return choices;
+}
+
+// Chip widths ascend, so the region allows every width up to this index.
+int widestBandwidthIndex(const radio::Region& region) {
+    int widest = 0;
+    for (int i = 0; i < RadioBandwidth::count; ++i) {
+        if (!radio::policy::hasLimits(region) || RadioBandwidth::values[i].hz <= region.maxBandwidthHz) widest = i;
+    }
+    return widest;
+}
+
+// The region's rules, plus the reminder to follow local rules when it fits.
+String regionRulesHint(const UserSettings& s, const lv_font_t* font, int width) {
+    char rules[48];
+    formatRadioRules(s, rules, sizeof(rules));
+    String hint = String(rules) + ". " + handheld::ui::radio_settings::LocalRulesShort;
+    if (lv_txt_get_width(hint.c_str(), hint.length(), font, 0, LV_TEXT_FLAG_NONE) <= width) return hint;
+    return String(rules);
+}
+
+}  // namespace
+
+// Radio setters report here. A refusal leaves the settings untouched; the
+// editor keeps its draft and the toast says why.
+void LvSettingsScreen::commitRadio(const radio::Outcome& outcome) {
+    const bool refused = outcome.verdict == radio::Verdict::Refused;
+    const char* note = radioOutcomeNote(outcome);
+    _commitRefusal = refused ? (note ? note : "Not allowed in region") : nullptr;
+    _commitNote = refused ? nullptr : note;
+}
+
+// The option lists and ranges of the LoRa rows follow the region and link.
+bool LvSettingsScreen::reshapesItems(const SettingItem& item) const {
+    return item.id == SettingId::Region || item.id == SettingId::LinkPreset ||
+        item.id == SettingId::Frequency || item.id == SettingId::Bandwidth;
 }
 
 bool LvSettingsScreen::isEditable(int idx) const {
@@ -377,8 +436,9 @@ void LvSettingsScreen::firmwareCheckTask(void* arg) {
 }
 
 void LvSettingsScreen::buildItems() {
-    // Rebuilding after an identity refresh or developer-mode change can move
-    // every later row. Restore the current category and item by identity.
+    // Rebuilding after an identity refresh, developer-mode change or radio
+    // commit can move every later row or change its choices. Restore the
+    // current category and item by identity.
     SettingsCategoryId category = SettingsCategoryId::None;
     SettingId selected = SettingId::None;
     if (_view == SettingsView::ITEM_LIST || _view == SettingsView::CATEGORY_LIST) {
@@ -410,74 +470,114 @@ void LvSettingsScreen::buildItems() {
     _items.back().id = SettingId::LoRaRadio;
     idx++;
     {
-        // Explicitly choosing a region restores its default frequency.
+        // Region is explicit. Choosing a different one applies its default
+        // frequency, link preset and TX power; re-confirming it changes nothing.
+        const RegionChoices regions = regionChoices(s.devMode);
         SettingItem regionItem;
-        regionItem.label = "Region Preset";
+        regionItem.label = "Region";
         regionItem.type = SettingType::ENUM_CHOICE;
-        regionItem.getter = [&s]() {
-            int region = constrain(s.radioRegion, 0, REGION_COUNT - 1);
-            return s.loraFrequency == REGION_FREQ[region] ? region : (int)REGION_COUNT;
+        regionItem.getter = [&s, regions]() {
+            const uint8_t stored = radio::regionValue(radioRegionOf(s).id);
+            for (int i = 0; i < regions.count; ++i) {
+                if (regions.ids[i] == stored) return i;
+            }
+            return 0;
         };
-        regionItem.setter = [&s](int v) {
-            if (v < 0 || v >= REGION_COUNT) return; // Keep the displayed Custom value.
-            RadioRegions::apply(s, v);
+        regionItem.setter = [this, &s, regions](int v) {
+            if (v < 0 || v >= regions.selectable || regions.ids[v] == s.radioRegion) return;
+            const radio::Outcome outcome = selectRadioRegion(s, regions.ids[v]);
+            commitRadio(outcome);
+            // The defaults are the point of the choice, not side effects to explain.
+            if (outcome.verdict != radio::Verdict::Refused)
+                _commitNote = outcome.changed ? "Region defaults applied" : nullptr;
         };
-        regionItem.minVal = 0; regionItem.maxVal = REGION_COUNT - 1; regionItem.step = 1;
-        regionItem.enumLabels.clear();
-        for (int r = 0; r < REGION_COUNT; r++) regionItem.enumLabels.push_back(REGION_LABELS[r]);
-        regionItem.enumLabels.push_back("Custom");
+        regionItem.minVal = 0; regionItem.maxVal = regions.selectable - 1; regionItem.step = 1;
+        for (int i = 0; i < regions.count; ++i)
+            regionItem.enumLabels.push_back(radio::findRegion(regions.ids[i])->label);
         _items.push_back(regionItem);
-        _items.back().id = SettingId::RegionPreset;
+        _items.back().id = SettingId::Region;
         idx++;
 
+        // Only presets the region allows. A link matching none shows Custom,
+        // which is display-only.
+        const PresetChoices presets = presetChoices(s.radioRegion);
         SettingItem presetItem;
         presetItem.label = "Link Preset";
         presetItem.type = SettingType::ENUM_CHOICE;
-        presetItem.getter = [this]() { int p = detectPreset(); return (p >= 0) ? p : RadioPresets::count; };
-        presetItem.setter = [this](int v) { if (v >= 0 && v < RadioPresets::count) applyPreset(v); };
-        presetItem.minVal = 0; presetItem.maxVal = RadioPresets::count - 1; presetItem.step = 1;
-        presetItem.enumLabels = {};
-        for (int i = 0; i < RadioPresets::count; i++)
-            presetItem.enumLabels.push_back(RadioPresets::values[i].name);
+        presetItem.getter = [&s, presets]() {
+            const int matched = radio::policy::matchPreset(radioLink(s));
+            for (int i = 0; matched >= 0 && i < presets.count; ++i) {
+                if (radio::PRESETS[matched].id == presets.ids[i]) return i;
+            }
+            return presets.count;
+        };
+        presetItem.setter = [this, &s, presets](int v) {
+            if (v < 0 || v >= presets.count) return;
+            // Re-confirming the active preset keeps a hand-set preamble.
+            const int matched = radio::policy::matchPreset(radioLink(s));
+            if (matched >= 0 && radio::PRESETS[matched].id == presets.ids[v]) return;
+            commitRadio(selectRadioPreset(s, presets.ids[v]));
+        };
+        presetItem.minVal = 0; presetItem.maxVal = presets.count - 1; presetItem.step = 1;
+        for (int i = 0; i < presets.count; ++i)
+            presetItem.enumLabels.push_back(radio::preset(presets.ids[i]).name);
         presetItem.enumLabels.push_back("Custom");
         _items.push_back(presetItem);
         _items.back().id = SettingId::LinkPreset;
         idx++;
     }
-    // Custom radio parameters - only visible in Developer Mode
+    // The whole link on one line, to copy into an RNode.
+    _items.push_back({"Link", SettingType::READONLY, nullptr, nullptr,
+        [&s](int) {
+            char link[40];
+            formatRadioLink(s, link, sizeof(link));
+            return String(link);
+        }});
+    _items.back().id = SettingId::RadioLink;
+    idx++;
+    // Manual RF values stay editable outside Developer Mode, so a hand-tuned
+    // RNode can be matched. Every edit goes through the region policy.
+    _items.push_back({"Frequency", SettingType::INTEGER,
+        [&s]() { return (int)(s.loraFrequency); },
+        [this, &s](int v) { commitRadio(editRadio(s, radio::Field::Frequency, v)); },
+        [](int v) { return formatRadioFrequency(v); },
+        LORA_MIN_FREQUENCY, LORA_MAX_FREQUENCY, 125000});
+    _items.back().id = SettingId::Frequency;
+    idx++;
+    _items.push_back({"TX Power", SettingType::INTEGER,
+        [&s]() { return s.loraTxPower; },
+        [this, &s](int v) { commitRadio(editRadio(s, radio::Field::TxPower, v)); },
+        [](int v) { return String(v) + " dBm"; }, BOARD_RADIO_CAPS.minTxDbm, radioTxCapDbm(s), 1});
+    _items.back().id = SettingId::TxPower;
+    idx++;
+    _items.push_back({"Spread Factor", SettingType::INTEGER,
+        [&s]() { return s.loraSF; },
+        [this, &s](int v) { commitRadio(editRadio(s, radio::Field::Spreading, v)); },
+        [](int v) { return String("SF") + String(v); }, 5, 12, 1});
+    _items.back().id = SettingId::SpreadFactor;
+    idx++;
+    // Labels cover every chip width; the choices stop at the region's widest.
+    _items.push_back({"Bandwidth", SettingType::ENUM_CHOICE,
+        [&s]() { return RadioBandwidth::index(s.loraBW); },
+        [this, &s](int v) {
+            const uint32_t hz = RadioBandwidth::values[constrain(v, 0, RadioBandwidth::count - 1)].hz;
+            commitRadio(editRadio(s, radio::Field::Bandwidth, static_cast<int32_t>(hz)));
+        },
+        nullptr, 0, widestBandwidthIndex(radioRegionOf(s)), 1, {}});
+    for (const auto& bandwidth : RadioBandwidth::values)
+        _items.back().enumLabels.push_back(bandwidth.label);
+    _items.back().id = SettingId::Bandwidth;
+    idx++;
+    _items.push_back({"Coding Rate", SettingType::INTEGER,
+        [&s]() { return s.loraCR; },
+        [this, &s](int v) { commitRadio(editRadio(s, radio::Field::Coding, v)); },
+        [](int v) { return String("4/") + String(v); }, 5, 8, 1});
+    _items.back().id = SettingId::CodingRate;
+    idx++;
     if (s.devMode) {
-        _items.push_back({"Frequency", SettingType::INTEGER,
-            [&s]() { return (int)(s.loraFrequency); },
-            [&s](int v) { s.loraFrequency = (uint32_t)v; },
-            [](int v) { return formatRadioFrequency(v); },
-            LORA_MIN_FREQUENCY, LORA_MAX_FREQUENCY, 125000});
-        _items.back().id = SettingId::Frequency;
-        idx++;
-        _items.push_back({"TX Power", SettingType::INTEGER,
-            [&s]() { return s.loraTxPower; }, [&s](int v) { s.loraTxPower = v; },
-            [](int v) { return String(v) + " dBm"; }, -9, 22, 1});
-        _items.back().id = SettingId::TxPower;
-        idx++;
-        _items.push_back({"Spread Factor", SettingType::INTEGER,
-            [&s]() { return s.loraSF; }, [&s](int v) { s.loraSF = v; },
-            [](int v) { return String("SF") + String(v); }, 5, 12, 1});
-        _items.back().id = SettingId::SpreadFactor;
-        idx++;
-        _items.push_back({"Bandwidth", SettingType::ENUM_CHOICE,
-            [&s]() { return RadioBandwidth::index(s.loraBW); },
-            [&s](int v) { s.loraBW = RadioBandwidth::values[constrain(v, 0, RadioBandwidth::count - 1)].hz; },
-            nullptr, 0, RadioBandwidth::count - 1, 1, {}});
-        for (const auto& bandwidth : RadioBandwidth::values)
-            _items.back().enumLabels.push_back(bandwidth.label);
-        _items.back().id = SettingId::Bandwidth;
-        idx++;
-        _items.push_back({"Coding Rate", SettingType::INTEGER,
-            [&s]() { return s.loraCR; }, [&s](int v) { s.loraCR = v; },
-            [](int v) { return String("4/") + String(v); }, 5, 8, 1});
-        _items.back().id = SettingId::CodingRate;
-        idx++;
         _items.push_back({"Preamble", SettingType::INTEGER,
-            [&s]() { return (int)s.loraPreamble; }, [&s](int v) { s.loraPreamble = v; },
+            [&s]() { return (int)s.loraPreamble; },
+            [this, &s](int v) { commitRadio(editRadio(s, radio::Field::Preamble, v)); },
             [](int v) { return String(v); }, 6, 65, 1});
         _items.back().id = SettingId::Preamble;
         idx++;
@@ -487,10 +587,9 @@ void LvSettingsScreen::buildItems() {
             if (loraSettingsChanged()) {
                 return String("Saved - reboot to apply");
             }
-            int p = detectPreset();
             auto& s = _cfg->settings();
             if (!s.loraEnabled) return String("Off");
-            String label = (p >= 0) ? String(RadioPresets::values[p].name) : String("Custom");
+            String label = radioPresetName(s);
             label += " ";
             label += formatRadioFrequency(s.loraFrequency);
             if (s.devMode) label += " / Dev";
@@ -936,7 +1035,13 @@ void LvSettingsScreen::buildItems() {
 #endif
     _items.push_back({"Timezone", SettingType::INTEGER,
         [&s]() { return (int)s.timezoneIdx; },
-        [&s](int v) { s.timezoneIdx = (uint8_t)v; s.timezoneSet = true; },
+        [this, &s](int v) {
+            // A new timezone never changes the radio region; it only points to it.
+            if (v != s.timezoneIdx && v >= 0 && v < TIMEZONE_COUNT &&
+                radio::regionValue(TIMEZONE_TABLE[v].radioRegion) != s.radioRegion)
+                _commitNote = "Check radio region in Settings";
+            s.timezoneIdx = (uint8_t)v; s.timezoneSet = true;
+        },
         [](int v) {
             if (v >= 0 && v < TIMEZONE_COUNT) return String(TIMEZONE_TABLE[v].label);
             return String("Unknown");
@@ -1617,8 +1722,10 @@ void LvSettingsScreen::rebuildItemList() {
         const bool deliveryPolicy = item.id == SettingId::PropagationDelivery;
         bool selected = (i == _selectedIdx);
         const bool voiceLimitHint = _editing && selected && item.id == SettingId::MaxVoiceMessages;
-        const bool radioRules = item.id == SettingId::RegionPreset;
-        const int valueOffset = voiceLimitHint ? -18 : fullValue || radioRules || (_freqEditing && selected) ? -9 : 0;
+        const bool regionRules = item.id == SettingId::Region;
+        // Short labels; their values (region names, the link line) need the room.
+        const bool wideValue = regionRules || item.id == SettingId::RadioLink;
+        const int valueOffset = voiceLimitHint ? -18 : fullValue || regionRules || (_freqEditing && selected) ? -9 : 0;
         bool editable = isEditable(i);
         bool rebootPending = settingNeedsReboot(item);
         bool armed = armedAction(item);
@@ -1626,7 +1733,7 @@ void LvSettingsScreen::rebuildItemList() {
         uint32_t armedColor = destructive ? Theme::ERROR_CLR : Theme::WARNING_CLR;
 
         lv_obj_t* row = lv_obj_create(_scrollContainer);
-        lv_obj_set_size(row, Theme::CONTENT_W, voiceLimitHint ? 64 : fullValue || radioRules ? 44 : _freqEditing && selected ? 46 : 28);
+        lv_obj_set_size(row, Theme::CONTENT_W, voiceLimitHint ? 64 : fullValue || regionRules ? 44 : _freqEditing && selected ? 46 : 28);
         lv_obj_add_style(row, LvTheme::styleListBtn(), 0);
         lv_obj_add_style(row, LvTheme::styleListBtnFocused(), LV_STATE_FOCUSED);
         lv_obj_set_style_bg_color(row, lv_color_hex(armed ? Theme::BG_SURFACE : (selected ? Theme::BG_HOVER : Theme::BG)), 0);
@@ -1746,7 +1853,8 @@ void LvSettingsScreen::rebuildItemList() {
             lv_obj_set_style_text_font(valLbl, fullValue ? &lv_font_rsdeck_10 : font, 0);
             lv_obj_set_style_text_color(valLbl, lv_color_hex(valColor), 0);
             lv_obj_set_style_text_align(valLbl, LV_TEXT_ALIGN_RIGHT, 0);
-            clipLabel(valLbl, fullValue ? Theme::CONTENT_W - 16 : _freqEditing && selected ? 180 : deliveryPolicy ? 156 : 124);
+            clipLabel(valLbl, fullValue ? Theme::CONTENT_W - 16 : _freqEditing && selected ? 180 :
+                wideValue ? Theme::CONTENT_W - 72 : deliveryPolicy ? 156 : 124);
             lv_label_set_text(valLbl, valStr.c_str());
             lv_obj_align(valLbl, LV_ALIGN_RIGHT_MID, -8, fullValue ? 10 : valueOffset);
             // Cache value label for the actively edited item (in-place updates)
@@ -1765,12 +1873,12 @@ void LvSettingsScreen::rebuildItemList() {
             lv_obj_align(hint, LV_ALIGN_BOTTOM_LEFT, 8, -3);
         }
 
-        if (radioRules) {
+        if (regionRules && _cfg) {
             lv_obj_t* hint = lv_label_create(row);
             lv_obj_set_style_text_font(hint, &lv_font_rsdeck_10, 0);
             lv_obj_set_style_text_color(hint, lv_color_hex(Theme::TEXT_MUTED), 0);
             clipLabel(hint, Theme::CONTENT_W - 16);
-            lv_label_set_text(hint, handheld::ui::radio_settings::LocalRules);
+            lv_label_set_text(hint, regionRulesHint(_cfg->settings(), &lv_font_rsdeck_10, Theme::CONTENT_W - 16).c_str());
             lv_obj_align(hint, LV_ALIGN_BOTTOM_LEFT, 8, -3);
         }
 
@@ -2136,16 +2244,18 @@ bool LvSettingsScreen::handleKey(const KeyEvent& event) {
                 if (event.enter || event.character == '\n' || event.character == '\r') {
                     auto& item = _items[_selectedIdx];
                     _editValue = freqRecompose();
-                    if (!loRaFrequencyBand(_editValue)) {
-                        if (_ui) _ui->lvStatusBar().showToast("Unsupported radio frequency", 2500);
-                        return true;
-                    }
+                    _commitRefusal = _commitNote = nullptr;
                     try { if (item.setter) item.setter(_editValue); }
                     catch (const std::bad_alloc&) {
                         if (_ui) _ui->lvStatusBar().showToast("Settings memory unavailable; retry", 2000);
                         return true;
                     }
-                    if (!applyAndSave()) return true;
+                    if (_commitRefusal) {
+                        // Nothing changed; keep the draft so it can be corrected.
+                        if (_ui) _ui->lvStatusBar().showToast(_commitRefusal, 2500);
+                        return true;
+                    }
+                    if (!applyAndSave(reshapesItems(item), _commitNote)) return true;
                     _freqEditing = false; _editing = false;
                     _editValueLbl = nullptr;
                     rebuildItemList(); return true;
@@ -2221,13 +2331,19 @@ bool LvSettingsScreen::handleKey(const KeyEvent& event) {
                         }
                         return true;
                     }
+                    _commitRefusal = _commitNote = nullptr;
                     try { if (item.setter) item.setter(_editValue); }
                     catch (const std::bad_alloc&) {
                         if (_ui) _ui->lvStatusBar().showToast("Settings memory unavailable; retry", 2000);
                         return true;
                     }
+                    if (_commitRefusal) {
+                        // Nothing changed; keep the draft so it can be corrected.
+                        if (_ui) _ui->lvStatusBar().showToast(_commitRefusal, 2500);
+                        return true;
+                    }
                     // A slot switch is a restart request, not a settings save.
-                    if (item.id != SettingId::IdentitySlot && !applyAndSave()) return true;
+                    if (item.id != SettingId::IdentitySlot && !applyAndSave(reshapesItems(item), _commitNote)) return true;
                     _editing = false;
                     _numericTyping = false;
                     rebuildItemList(); return true;
@@ -2485,7 +2601,7 @@ String LvSettingsScreen::freqFormatWithCursor() const {
     return String(buf);
 }
 
-bool LvSettingsScreen::applyAndSave(bool rebuildItems) {
+bool LvSettingsScreen::applyAndSave(bool rebuildItems, const char* note) {
     if (!_service || !_cfg) return false;
     const bool wasRebootNeeded = _rebootNeeded;
     // Report only what this save changed; re-apply the radio only for radio edits.
@@ -2493,7 +2609,7 @@ bool LvSettingsScreen::applyAndSave(bool rebuildItems) {
     const bool rebootChange = rebootFieldsDiffer(_cfg->settings(), committed);
     const bool radioChange = radioFieldsDiffer(_cfg->settings(), committed);
     const auto generation = _fwViewGeneration;
-    const bool admitted = _service->applySettings([this, wasRebootNeeded, rebootChange, generation, rebuildItems](const handheld::Result& result) {
+    const bool admitted = _service->applySettings([this, wasRebootNeeded, rebootChange, generation, rebuildItems, note](const handheld::Result& result) {
         _rebootNeeded = rebootSettingsChanged();
         _itemsNeedRebuild |= rebuildItems || _service->settingsPending();
         if (!_viewActive || generation != _fwViewGeneration) {
@@ -2504,10 +2620,14 @@ bool LvSettingsScreen::applyAndSave(bool rebuildItems) {
         }
         if (_screen && _view == SettingsView::ITEM_LIST && !rebuildItems) rebuildItemList();
         if (!_ui || result.outcome != handheld::Outcome::Ok) return;
+        // A radio note replaces only the plain success text, never a radio problem.
+        const bool plainSave = !result.detail[0] || strcmp(result.detail, "Settings saved") == 0;
+        const bool showNote = note && plainSave;
         _ui->lvStatusBar().showToast(
             rebootChange && _rebootNeeded ? "Saved; reboot to apply" :
             wasRebootNeeded && !_rebootNeeded ? "Pending reboot cleared" :
-            result.detail[0] ? result.detail : "Saved", 2000);
+            showNote ? note :
+            result.detail[0] ? result.detail : "Saved", showNote ? 2500 : 2000);
     }, radioChange);
     if (!admitted) {
         // Local refusal can retain the candidate in ServiceClient. Keep only

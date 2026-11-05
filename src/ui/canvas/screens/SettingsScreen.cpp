@@ -3,9 +3,8 @@
 #include "config/Config.h"
 #include "config/SettingsInput.h"
 #include "config/AnnounceInterval.h"
-#include "radio/RadioFrequency.h"
-#include "radio/RadioPresets.h"
-#include "radio/RadioRegions.h"
+#include "radio/RadioBandwidth.h"
+#include "radio/RadioPolicyConfig.h"
 #include "radio/RadioSettings.h"
 #include "util/DisplayText.h"
 #include "storage/MessageStore.h"
@@ -77,6 +76,98 @@ void drawSettingsNotice(M5Canvas& canvas, const char* text) {
         canvas.setCursor(tx + 6, ty + 4 + row * Theme::CHAR_H);
         canvas.print(line);
     });
+}
+
+// Radio edit rows keep their established field numbers: 0=frequency, 1=SF,
+// 2=bandwidth, 3=coding rate, 4=TX power, 5=preamble.
+constexpr radio::Field RADIO_EDIT_FIELDS[] = {
+    radio::Field::Frequency, radio::Field::Spreading, radio::Field::Bandwidth,
+    radio::Field::Coding, radio::Field::TxPower, radio::Field::Preamble,
+};
+
+bool radioEditField(int field, radio::Field& out) {
+    if (field < 0 || field >= int(sizeof(RADIO_EDIT_FIELDS) / sizeof(RADIO_EDIT_FIELDS[0]))) return false;
+    out = RADIO_EDIT_FIELDS[field];
+    return true;
+}
+
+// The chip bandwidths in Hz the region allows: exactly what the editor accepts.
+void formatAllowedBandwidths(const UserScalars& s, char* out, size_t size) {
+    if (!size) return;
+    const radio::Region& region = radioRegionOf(s);
+    const bool limited = radio::policy::hasLimits(region);
+    size_t used = 0;
+    out[0] = '\0';
+    for (const auto& value : RadioBandwidth::values) {
+        if (limited && value.hz > region.maxBandwidthHz) continue;
+        const int written = snprintf(out + used, size - used, used ? " %lu" : "%lu", (unsigned long)value.hz);
+        if (written < 0 || size_t(written) >= size - used) { out[used] = '\0'; return; }
+        used += size_t(written);
+    }
+}
+
+void formatRadioEditLabel(const UserScalars& s, radio::Field field, char* out, size_t size) {
+    switch (field) {
+        case radio::Field::Frequency: snprintf(out, size, "%s", "Frequency (Hz):"); return;
+        case radio::Field::Spreading: snprintf(out, size, "%s", "Spreading factor (5-12):"); return;
+        case radio::Field::Bandwidth: snprintf(out, size, "%s", "Bandwidth (Hz):"); return;
+        case radio::Field::Coding: snprintf(out, size, "%s", "Coding rate (5-8):"); return;
+        case radio::Field::TxPower:
+            snprintf(out, size, "TX power (%d to %d dBm):", int(BOARD_RADIO_CAPS.minTxDbm), int(radioTxCapDbm(s)));
+            return;
+        case radio::Field::Preamble: snprintf(out, size, "%s", "Preamble (6-65 symbols):"); return;
+    }
+}
+
+// Where the centre frequency may go: the whole signal must fit the band.
+void formatCentreRange(const UserScalars& s, char* out, size_t size) {
+    const radio::Region& region = radioRegionOf(s);
+    if (region.bandCount != 1) {
+        snprintf(out, size, "Whole signal must fit a %s sub-band", region.label);
+        return;
+    }
+    const uint32_t half = s.loraBW / 2;
+    char low[16], high[16];
+    radio::policy::formatMhz(region.bands[0].minHz + half, low, sizeof(low));
+    radio::policy::formatMhz(region.bands[0].maxHz - half, high, sizeof(high));
+    snprintf(out, size, "Centre %s-%s MHz", low, high);
+}
+
+// Guidance under the radio editor; empty when the label says enough.
+void formatRadioEditHint(const UserScalars& s, radio::Field field, char* out, size_t size) {
+    if (!size) return;
+    out[0] = '\0';
+    if (field == radio::Field::Bandwidth) { formatAllowedBandwidths(s, out, size); return; }
+    if (field != radio::Field::Frequency && field != radio::Field::TxPower) return;
+    const radio::Region& region = radioRegionOf(s);
+    size_t used = 0;
+    if (field == radio::Field::Frequency && radio::policy::hasLimits(region)) {
+        formatCentreRange(s, out, size);
+        const size_t written = strlen(out);
+        if (written + 1 < size) { out[written] = '\n'; out[written + 1] = '\0'; }
+        used = strlen(out);
+    }
+    used += formatRadioRules(s, out + used, size - used);
+    snprintf(out + used, size - used, "\n%s", handheld::ui::radio_settings::LocalRulesShort);
+}
+
+// A refused edit: the policy's reason, then what the field accepts here.
+void formatRadioRefusal(const UserScalars& s, radio::Field field, const char* reason, char* out, size_t size) {
+    if (!size) return;
+    if (!reason) reason = "Not allowed in region";
+    const radio::Region& region = radioRegionOf(s);
+    if (field == radio::Field::Frequency && radio::policy::hasLimits(region)) {
+        const int written = snprintf(out, size, "%s\n", reason);
+        if (written > 0 && size_t(written) < size) formatCentreRange(s, out + written, size - size_t(written));
+    } else if (field == radio::Field::TxPower) {
+        snprintf(out, size, "%s\nTX power: %d to %d dBm", reason, int(BOARD_RADIO_CAPS.minTxDbm),
+                 int(radioTxCapDbm(s)));
+    } else if (field == radio::Field::Bandwidth) {
+        const int written = snprintf(out, size, "%s\n", reason);
+        if (written > 0 && size_t(written) < size) formatAllowedBandwidths(s, out + written, size - size_t(written));
+    } else {
+        snprintf(out, size, "%s", reason);
+    }
 }
 } // namespace
 
@@ -240,16 +331,21 @@ void SettingsScreen::buildRadioMenu() {
     clearRows();
     if (!_config) return;
     const auto& s = settingsView();
-    char buf[40];
+    char buf[64];
 
-    // Active preset indicator
-    snprintf(buf, sizeof(buf), "%s: %s", (_radioApplyPending || _config->settingsPending()) ? "Pending" : _candidate ? "Unsaved" : "Saved", RadioPresets::name(s));
-    addRow(buf);
+    // Active preset indicator. Info rows carry distinct values so a rebuild
+    // restores the same row.
+    snprintf(buf, sizeof(buf), "%s: %s", (_radioApplyPending || _config->settingsPending()) ? "Pending" : _candidate ? "Unsaved" : "Saved", radioPresetName(s));
+    addRow(buf, RowAction::Info, 0);
     addRow("Link Presets", RowAction::OpenMenu, MENU_RADIO_PRESETS);
-    const int region = constrain((int)s.radioRegion, 0, REGION_COUNT - 1);
-    snprintf(buf, sizeof(buf), "Region: %s",
-             s.loraFrequency == REGION_FREQ[region] ? REGION_LABELS[region] : "Custom");
+    // The stored region, never one inferred from the frequency.
+    snprintf(buf, sizeof(buf), "Region: %s", radioRegionOf(s).label);
     addRow(buf, RowAction::OpenMenu, MENU_RADIO_REGIONS);
+    // The tuple a peer such as an RNode must be set to.
+    char link[40];
+    formatRadioLink(s, link, sizeof(link));
+    snprintf(buf, sizeof(buf), "Link: %s", link);
+    addRow(buf, RowAction::Info, 1);
 
     snprintf(buf, sizeof(buf), "Frequency: %lu Hz", (unsigned long)s.loraFrequency);
     addRow(buf, RowAction::Edit, 0);
@@ -263,34 +359,45 @@ void SettingsScreen::buildRadioMenu() {
     addRow(buf, RowAction::Edit, 3);
     snprintf(buf, sizeof(buf), "Preamble: %ld symbols", s.loraPreamble);
     addRow(buf, RowAction::Edit, 5);
-    addRow(handheld::ui::radio_settings::LocalRulesShort, RowAction::Info, 0, Theme::MUTED);
+    formatRadioRules(s, buf, sizeof(buf));
+    addRow(buf, RowAction::Info, 2, Theme::MUTED);
+    addRow(handheld::ui::radio_settings::LocalRulesShort, RowAction::Info, 3, Theme::MUTED);
 
     addRow("< Back", RowAction::Back);
 }
 
 void SettingsScreen::buildRadioPresetsMenu() {
+    static_assert(RowCapacity >= radio::PRESET_COUNT + 2, "Every link preset needs a settings row");
     clearRows();
     if (!_config) return;
-    const int activeIdx = RadioPresets::detect(settingsView());
-    for (int i = 0; i < RadioPresets::count; ++i) {
+    const auto& s = settingsView();
+    // Only the presets the region allows; a link matching none reads Custom.
+    const int active = radio::policy::matchPreset(radioLink(s));
+    for (int i = 0; i < radio::PRESET_COUNT; ++i) {
+        const radio::Preset& preset = radio::PRESETS[i];
+        if (!radio::policy::presetAllowed(s.radioRegion, preset.id)) continue;
         char label[40];
-        snprintf(label, sizeof(label), "%s[%s]",
-                 i == activeIdx ? ">" : " ", RadioPresets::values[i].name);
-        addRow(label, RowAction::Preset, uint8_t(i), i == activeIdx ? Theme::PRIMARY : 0);
+        snprintf(label, sizeof(label), "%s[%s]", i == active ? ">" : " ", preset.name);
+        addRow(label, RowAction::Preset, uint8_t(i), i == active ? Theme::PRIMARY : 0);
     }
+    if (active < 0) addRow(">[Custom]", RowAction::Info, 0, Theme::PRIMARY);
     addRow("< Back", RowAction::Back);
 }
 
 void SettingsScreen::buildRadioRegionsMenu() {
+    static_assert(RowCapacity >= radio::REGION_COUNT + 2, "Every region needs a settings row");
     clearRows();
     if (!_config) return;
     const auto& s = settingsView();
-    for (int i = 0; i < REGION_COUNT; ++i) {
-        // Active only while the frequency still matches the region default.
-        const bool active = s.radioRegion == i && s.loraFrequency == REGION_FREQ[i];
+    for (const auto& region : radio::REGIONS) {
+        // Active is the stored region. A stored region stays listed even when
+        // it is not selectable (Custom outside Developer Mode).
+        const uint8_t id = radio::regionValue(region.id);
+        const bool active = s.radioRegion == id;
+        if (!active && !radio::policy::regionSelectable(region, s.devMode)) continue;
         char label[40];
-        snprintf(label, sizeof(label), "%s[%s]", active ? ">" : " ", REGION_LABELS[i]);
-        addRow(label, RowAction::Region, uint8_t(i), active ? Theme::PRIMARY : 0);
+        snprintf(label, sizeof(label), "%s[%s]", active ? ">" : " ", region.label);
+        addRow(label, RowAction::Region, id, active ? Theme::PRIMARY : 0);
     }
     addRow(handheld::ui::radio_settings::LocalRulesShort, RowAction::Info, 0, Theme::MUTED);
     addRow("< Back", RowAction::Back);
@@ -695,6 +802,12 @@ void SettingsScreen::startEditing(int field, const std::string& currentValue) {
     try {
     _editField = field;
     _editLabel = _subMenu == MENU_IDENTITY && field == 4 ? "Announce: 0=OFF, 30-360m" : "";
+    radio::Field radioField;
+    if (_subMenu == MENU_RADIO && radioEditField(field, radioField)) {
+        char label[40];
+        formatRadioEditLabel(settingsView(), radioField, label, sizeof(label));
+        _editLabel = label;
+    }
     _editing = true;
     _editInput.clear();
     _editInput.setAllowEmptySubmit((_subMenu == MENU_IDENTITY && field == 3) ||
@@ -767,42 +880,22 @@ void SettingsScreen::commitEdit(const std::string& value) {
         }
         if (!savePropagationAddress(parsed.manual)) return;
     } else if (_subMenu == MENU_RADIO) {
+        radio::Field field;
+        if (!radioEditField(_editField, field)) return;
         int32_t v;
-        if (!handheld::settings::parseInteger(value, -9, LORA_MAX_FREQUENCY, v)) {
+        if (!handheld::settings::parseInteger(value, INT32_MIN, INT32_MAX, v)) {
             showToast("Enter a valid whole number");
             return;
         }
-        switch (_editField) {
-            case 0:  // Frequency in Hz, independent of region presets.
-                if (v < 0 || v > (long)LORA_MAX_FREQUENCY || !loRaFrequencyBand((uint32_t)v)) {
-                    showToast("Unsupported frequency");
-                    return;
-                }
-                next.loraFrequency = (uint32_t)v;
-                break;
-            case 1:  // SF: 5-12
-                if (v < 5 || v > 12) { showToast("SF: 5-12"); return; }
-                next.loraSF = (uint8_t)v;
-                break;
-            case 2:  // BW: 7800-500000
-                if (v < 7800 || v > 500000) { showToast("BW: 7800-500000 Hz"); return; }
-                next.loraBW = (uint32_t)v;
-                break;
-            case 3:  // CR: 5-8
-                if (v < 5 || v > 8) { showToast("CR: 5-8"); return; }
-                next.loraCR = (uint8_t)v;
-                break;
-            case 4:  // TX Power
-                if (v < -9 || v > LORA_MAX_TX_POWER) { showToast("TX power: -9 to 22 dBm"); return; }
-                next.loraTxPower = (int8_t)v;
-                break;
-            case 5:
-                if (v < 6 || v > 65) { showToast("Preamble: 6-65 symbols"); return; }
-                next.loraPreamble = v;
-                break;
-            default: return;
+        // The region policy refuses a value it would have to change; nothing
+        // is saved and the editor keeps the text for another try.
+        const radio::Outcome outcome = editRadio(next, field, v);
+        if (outcome.verdict == radio::Verdict::Refused) {
+            formatRadioRefusal(next, field, outcome.reason, _toastText, sizeof(_toastText));
+            showToast(_toastText, 2500);
+            return;
         }
-        if (!applyScalars(next)) return;
+        if (!saveRadioChange(next, radioOutcomeNote(outcome), false)) return;
         buildRadioMenu();
     } else if (_subMenu == MENU_TCP) {
         if (_editField == 100 && !value.empty()) {
@@ -963,7 +1056,7 @@ void SettingsScreen::render(M5Canvas& canvas) {
     const char* headers[] = {"SETTINGS", "LORA", "WI-FI & TCP", "TCP CONNECTIONS",
                              "STORAGE", "DISPLAY", "ALERTS", "DEVICE", "WIFI SCAN",
                              "PROPAGATION", "MANUAL NODE", "PROPAGATION NODES", "VOICE MESSAGES",
-                             "IDENTITY", "LINK PRESETS", "WI-FI MODE", "REGION PRESETS"};
+                             "IDENTITY", "LINK PRESETS", "WI-FI MODE", "RADIO REGION"};
     static_assert(sizeof(headers) / sizeof(headers[0]) == MENU_COUNT,
                   "Every settings menu needs a visible header");
     const int headerH = Theme::SECTION_HEADER_H;
@@ -991,18 +1084,20 @@ void SettingsScreen::render(M5Canvas& canvas) {
             canvas.drawString(handheld::ui::voice_settings::StorageScope, 4, y0 + headerH + 50);
             canvas.drawString(handheld::ui::voice_settings::Expiry, 4, y0 + headerH + 62);
         }
-        if (_subMenu == MENU_RADIO && (_editField == 0 || _editField == 4)) {
-            // Frequency and power edits wrap the shared line for this width.
-            const std::string rules = handheld::ui::radio_settings::LocalRules;
-            const size_t cut = rules.rfind(' ', size_t(Theme::CONTENT_W - 8) / Theme::CHAR_W);
-            canvas.drawString(rules.substr(0, cut).c_str(), 4, y0 + headerH + 50);
-            canvas.drawString(rules.substr(cut + 1).c_str(), 4, y0 + headerH + 62);
+        radio::Field radioField;
+        if (_subMenu == MENU_RADIO && radioEditField(_editField, radioField)) {
+            // Region band and limits, or the bandwidths the region accepts.
+            char hint[112];
+            formatRadioEditHint(settingsView(), radioField, hint, sizeof(hint));
+            if (*hint) visitSettingsNotice(hint, [&](size_t row, const char* line, size_t) {
+                canvas.drawString(line, 4, y0 + headerH + 50 + int(row) * 12);
+            });
         }
     } else {
         _list.render(canvas, 0, y0 + headerH + 2, Theme::CONTENT_W,
                      Theme::CONTENT_H - headerH - 3, true,
                      _subMenu == MENU_PROPAGATION || _subMenu == MENU_PROPAGATION_NODES ||
-                     _subMenu == MENU_IDENTITY);
+                     _subMenu == MENU_IDENTITY || _subMenu == MENU_RADIO);
         if (_subMenu == MENU_WIFI) _drawnWiFiAction = _wifiAction;
     }
 
@@ -1286,23 +1381,29 @@ void SettingsScreen::finishRadioApply(RadioApply result) {
         rebuildMenu(); restoreRow(selected);
     }
     if (_radioApplyPending) { showToast("Saved; waiting for radio", 2500); return; }
-    const bool announce = _presetAnnouncePending && result == RadioApply::Applied;
-    _presetAnnouncePending = false; // Retire before any backend callback.
-    if (result == RadioApply::RebootRequired) { showToast("Saved; radio needs reboot", 2500); return; }
-    if (result == RadioApply::Unavailable) { showToast("Saved; radio unavailable", 2500); return; }
-    if (!announce) { showToast("Settings saved"); return; }
-    if (!_backend || !_backend->protocolReady()) { showToast("Preset applied (no announce)"); return; }
-    const auto appData = encodeAnnounceName(_config->settings().displayName, _backend->destinationHashHex().c_str());
-    const auto sent = _backend->announce(appData.data(), appData.size());
-    showToast(sent == ProtocolBackend::AnnounceResult::Sent ? "Preset applied + announced" :
-        sent == ProtocolBackend::AnnounceResult::Deferred ? "Preset applied; announce queued" :
-        "Preset applied (announce failed)");
+    const bool announce = _linkAnnouncePending && result == RadioApply::Applied;
+    const char* note = _radioNote;
+    _linkAnnouncePending = false; _radioNote = nullptr; // Retire before any backend callback.
+    const char* status = result == RadioApply::RebootRequired ? "Saved; radio needs reboot" :
+        result == RadioApply::Unavailable ? "Saved; radio unavailable" : "Settings saved";
+    if (announce && (!_backend || !_backend->protocolReady())) status = "Link applied (no announce)";
+    else if (announce) {
+        const auto appData = encodeAnnounceName(_config->settings().displayName, _backend->destinationHashHex().c_str());
+        const auto sent = _backend->announce(appData.data(), appData.size());
+        status = sent == ProtocolBackend::AnnounceResult::Sent ? "Link applied + announced" :
+            sent == ProtocolBackend::AnnounceResult::Deferred ? "Link applied; announce queued" :
+            "Link applied (announce failed)";
+    }
+    if (!note) { showToast(status, result == RadioApply::Applied ? 1500 : 2500); return; }
+    snprintf(_toastText, sizeof(_toastText), "%s\n%s", note, status);
+    showToast(_toastText, 2500);
 }
 
 bool SettingsScreen::pollRadioApply(bool accepting) {
     if (!accepting) {
         const bool pending = _radioApplyPending;
-        _radioApplyPending = _presetAnnouncePending = false;
+        _radioApplyPending = _linkAnnouncePending = false;
+        _radioNote = nullptr;
         if (pending && _radioApply) _radioApply(_config->settings(), false);
         return pending;
     }
@@ -1313,25 +1414,44 @@ bool SettingsScreen::pollRadioApply(bool accepting) {
     return true;
 }
 
+// Saves a radio change. The note and the announce wait for the radio apply
+// result; a save or apply still settling keeps them for its final result.
+bool SettingsScreen::saveRadioChange(const UserScalars& next, const char* note, bool announce) {
+    _radioNote = note;
+    _linkAnnouncePending = announce;
+    const bool saved = applyScalars(next);
+    if (!saved && !_config->settingsPending() && !_radioApplyPending) {
+        _radioNote = nullptr; _linkAnnouncePending = false;
+    }
+    return saved;
+}
+
 void SettingsScreen::applyRadioPreset(int preset) {
     if (_config && (_config->settingsPending() || _radioApplyPending)) { showToast("Settings apply pending"); return; }
-    if (!_config || preset < 0 || preset >= RadioPresets::count) return;
+    if (!_config || preset < 0 || preset >= radio::PRESET_COUNT) return;
     UserScalars next = _config->settings();
-    RadioPresets::apply(next, preset);
-    _presetAnnouncePending = true;
-    const bool saved = applyScalars(next);
-    if (!saved && !_config->settingsPending() && !_radioApplyPending) _presetAnnouncePending = false;
+    const radio::Outcome outcome = selectRadioPreset(next, radio::PRESETS[preset].id);
+    if (outcome.verdict == radio::Verdict::Refused) { showToast(outcome.reason, 2500); return; }
+    saveRadioChange(next, radioOutcomeNote(outcome), true);
     const Row selected = selectedRow();
     rebuildMenu(); restoreRow(selected);
 }
 
-// Explicitly choosing a region restores its default frequency.
-void SettingsScreen::applyRadioRegion(int region) {
+// Choosing another region resets frequency, link preset and TX power to that
+// region's defaults. Re-confirming the stored region changes nothing.
+void SettingsScreen::applyRadioRegion(uint8_t region) {
     if (_config && (_config->settingsPending() || _radioApplyPending)) { showToast("Settings apply pending"); return; }
-    if (!_config || region < 0 || region >= REGION_COUNT) return;
+    if (!_config) return;
+    if (_config->settings().radioRegion == region) { showToast("Region already selected"); return; }
+    const radio::Region* target = radio::findRegion(region);
+    if (!target) return;
+    if (!radio::policy::regionSelectable(*target, _config->settings().devMode)) {
+        showToast("Developer Mode only"); return;
+    }
     UserScalars next = _config->settings();
-    RadioRegions::apply(next, region);
-    applyScalars(next);
+    const radio::Outcome outcome = selectRadioRegion(next, region);
+    if (outcome.verdict == radio::Verdict::Refused) { showToast(outcome.reason, 2500); return; }
+    saveRadioChange(next, outcome.changed ? "Region defaults applied" : nullptr, true);
     const Row selected = selectedRow();
     rebuildMenu(); restoreRow(selected);
 }

@@ -11,8 +11,9 @@ enum class SettingsCategoryId : uint8_t {
 enum class SettingId : uint8_t {
     None,
     LoRaRadio,
-    RegionPreset,
+    Region,
     LinkPreset,
+    RadioLink,
     Frequency,
     TxPower,
     SpreadFactor,

@@ -103,43 +103,73 @@ available in this release.
 
 ## Standalone radio defaults
 
-New or reset radio settings use **Medium Fast**: bandwidth **250 kHz**
-(`250000` Hz), spreading factor **9**, coding rate **4/5** (`5` in RNode
-configuration), TX power **17 dBm**, and preamble **18 symbols**. Existing saved
-settings are retained.
+New or reset radio settings use the **Americas** region and the **Medium Fast**
+link preset: 915 MHz, bandwidth **250 kHz** (`250000` Hz), spreading factor
+**9**, coding rate **4/5** (`5` in RNode configuration), TX power **17 dBm**
+and preamble **18 symbols**. On first setup, the city you choose selects its
+region.
 
-The region selection sets the center frequency separately from the link preset:
+### Regions
 
-| Region | Default center frequency | Frequency in Hz |
-|---|---|---|
-| Americas | 915.000 MHz | `915000000` |
-| Europe (EU868) | **868.000 MHz** | `868000000` |
-| Australia | 915.000 MHz | `915000000` |
-| Asia | 923.000 MHz | `923000000` |
-| India (IN865) | 866.000 MHz | `866000000` |
+Each region sets a default frequency and limits the frequency, bandwidth and
+TX power you can choose. Choosing a region resets frequency, link preset and
+TX power to that region's defaults.
 
-For example, an RNode communicating with a handheld on **Europe + Medium Fast**
-needs `frequency = 868000000`, `bandwidth = 250000`, `spreadingfactor = 9`,
-and `codingrate = 5`. Match any custom settings saved on the handheld instead
-of assuming the defaults. Choosing a region again restores its default frequency;
-changing the link preset does not change frequency. TX power need not match.
-In **RNode mode**, the connected host client controls the radio settings.
+| Region | Band | Default frequency | Default preset | Max bandwidth | Max TX power |
+|---|---|---|---|---|---|
+| Americas | 902-928 MHz | 915 MHz | Medium Fast | 500 kHz | 22 dBm (radio maximum) |
+| Europe | 863-870 MHz sub-bands | 868 MHz | Medium Fast | 500 kHz | 14 dBm; 22 dBm in 869.4-869.65 MHz |
+| Aus/NZ | 915-928 MHz | 925.875 MHz | Medium Fast | 500 kHz | 22 dBm (radio maximum) |
+| Asia | 920-925 MHz | 923 MHz | Medium Fast | 500 kHz | 20 dBm |
+| India | 865-867 MHz | 866.6 MHz | Lite Fast | 125 kHz | 14 dBm |
 
-**India (IN865)** is the one region that also enforces limits. Choosing it
-applies a complete compliant link: 866.000 MHz, bandwidth **125 kHz**, SF 9,
-coding rate 4/5, 17 dBm and an 18-symbol preamble (Medium Fast, narrowed). While
-India is selected and the radio is tuned inside 865-867 MHz, bandwidth is kept
-at or below 125 kHz, the widest standard LoRa width under India's 200 kHz
-carrier limit. Link presets run narrowed to 125 kHz, so Short Turbo and Long
-Turbo become Short Fast and Long Moderate, and manual edits are clamped when
-saved. India's 1 W (30 dBm) power limit is above the radio's 22 dBm maximum.
-An RNode linking with a handheld on the India preset needs
-`frequency = 866000000`, `bandwidth = 125000`, `spreadingfactor = 9` and
-`codingrate = 5`.
+The whole signal (frequency plus or minus half the bandwidth) must fit inside
+the band, so for example India accepts 865.0625 MHz at 125 kHz but not
+865.000 MHz. Power caps assume a 2 dBi antenna. Duty-cycle limits (Europe 1%
+or 10% depending on sub-band, India 1%) are shown in Settings but not
+enforced. New Zealand limits 915-921 MHz to 3 mW, so stay in 921-928 MHz
+there.
 
-Follow your local radio regulations for frequency, transmit power and duty
-cycle. Apart from India, region and link presets do not limit power or airtime
-for your region.
+India follows the general tier of G.S.R. 853(E) (2021): 25 mW ERP and a 1%
+duty cycle, at or below 125 kHz. The higher-power tiers need adaptive power
+control, which the firmware does not have.
+
+**Custom** removes regional limits and is available only with Developer
+controls on. Settings saved by older firmware keep their link: if a saved
+frequency, bandwidth or region no longer fits its region (for example the old
+Australia default of 915.000 MHz), the region shows as Custom until you pick a
+region again.
+
+These limits summarise each region's licence-exempt rules as best we know them
+and are not legal advice. Follow your local radio regulations.
+
+### Link presets
+
+Presets set spreading factor, bandwidth and coding rate. They mean the same
+thing in every region and do not change TX power. A region offers only the
+presets that fit its bandwidth limit.
+
+| Preset | SF | Bandwidth | Coding rate |
+|---|---|---|---|
+| Short Turbo | 7 | 500 kHz | 4/5 |
+| Short Fast | 7 | 250 kHz | 4/5 |
+| Short Slow | 8 | 250 kHz | 4/5 |
+| Medium Fast | 9 | 250 kHz | 4/5 |
+| Medium Slow | 10 | 250 kHz | 4/5 |
+| Long Turbo | 11 | 500 kHz | 4/8 |
+| Long Fast | 11 | 250 kHz | 4/5 |
+| Long Moderate | 11 | 125 kHz | 4/8 |
+| Lite Fast | 9 | 125 kHz | 4/5 |
+| Lite Slow | 10 | 125 kHz | 4/5 |
+
+### Matching an RNode
+
+Settings > LoRa shows the handheld's current link, for example
+`866.6 MHz 125k SF9 CR5`. An RNode on that link needs
+`frequency = 866600000`, `bandwidth = 125000`, `spreadingfactor = 9` and
+`codingrate = 5`. Frequency, bandwidth and spreading factor must match; TX
+power need not. In **RNode mode**, the connected host client controls the radio
+settings and the handheld's regional limits do not apply.
 
 ## Propagation
 
@@ -189,6 +219,9 @@ are written to `dist/`. Normal builds use the included Rust libraries; a Rust
 toolchain is not required.
 
 M9 builds Standalone only and does not require Arduino CLI.
+
+The radio region and link-preset rules have host tests that need only a C++17
+compiler: run `tests/host/run.sh`.
 
 ## License
 

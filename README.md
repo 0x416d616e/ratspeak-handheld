@@ -118,21 +118,55 @@ TX power to that region's defaults.
 | Region | Band | Default frequency | Default preset | Max bandwidth | Max TX power |
 |---|---|---|---|---|---|
 | Americas | 902-928 MHz | 915 MHz | Medium Fast | 500 kHz | 22 dBm (radio maximum) |
-| Europe | 863-870 MHz sub-bands | 868 MHz | Medium Fast | 500 kHz | 14 dBm; 22 dBm in 869.4-869.65 MHz |
+| Europe | 863-870 MHz sub-bands | 868 MHz | Medium Fast | 500 kHz | 13 dBm; 22 dBm in 869.4-869.65 MHz |
 | Aus/NZ | 915-928 MHz | 925.875 MHz | Medium Fast | 500 kHz | 22 dBm (radio maximum) |
-| Asia | 920-925 MHz | 923 MHz | Medium Fast | 500 kHz | 20 dBm |
-| India | 865-867 MHz | 866.6 MHz | Lite Fast | 125 kHz | 14 dBm |
+| Asia | 920-925 MHz | 923 MHz | Medium Fast | 500 kHz | 19 dBm |
+| India | 865-868 MHz | 866.6 MHz | Lite Fast | 125 kHz | 13 dBm |
 
 The whole signal (frequency plus or minus half the bandwidth) must fit inside
 the band, so for example India accepts 865.0625 MHz at 125 kHz but not
-865.000 MHz. Power caps assume a 2 dBi antenna. Duty-cycle limits (Europe 1%
-or 10% depending on sub-band, India 1%) are shown in Settings but not
-enforced. New Zealand limits 915-921 MHz to 3 mW, so stay in 921-928 MHz
-there.
+865.000 MHz.
 
-India follows the general tier of G.S.R. 853(E) (2021): 25 mW ERP and a 1%
-duty cycle, at or below 125 kHz. The higher-power tiers need adaptive power
-control, which the firmware does not have.
+Power caps convert each legal limit (conducted, ERP or EIRP) to the radio's
+output assuming a 2 dBi antenna, then stay 1 dB below it for the radio's
+output tolerance. With a higher-gain antenna, lower TX power by the extra gain
+(for example, 3 dB less with a 5 dBi antenna).
+
+Duty-cycle limits (Europe 1% or 10% depending on sub-band, India 1%) are shown
+in Settings but **not enforced yet**. In Europe and India the duty cycle is a
+condition of licence-exempt use, so until the firmware limits airtime you must
+keep within it yourself: 1% is 36 seconds of transmission in any hour, about
+27 full-size Lite Fast packets. New Zealand limits 915-921 MHz to 3 mW, so
+stay in 921-928 MHz there.
+
+#### India
+
+India's limits come from **G.S.R. 853(E) of 10 December 2021** (Use of Low
+Power Equipment in the Frequency Band 865-868 MHz for Short Range Devices),
+which replaced the 2005 865-867 MHz rules. A LoRa messenger falls under
+Table-I, Non-Specific Short Range Devices ("data in general"): 865-868 MHz,
+25 mW e.r.p. and a 1% duty cycle over the whole transmission, with no
+listen-before-talk alternative. The other tables do not apply: Table-II
+(500 mW) is for tracking, tracing and data-acquisition devices and requires
+adaptive power control, Table-III needs more than 600 kHz of bandwidth, and
+Table-IV is for RFID.
+
+- **Bandwidth:** Table-I sets no bandwidth limit for a fixed-channel device.
+  The 125 kHz maximum and the 866.6 MHz default are our choice: they sit
+  between the 2 W RFID channels (865.7, 866.3, 866.9 and 867.5 MHz) and clear
+  of Meshtastic India's default channels.
+- **Frequency hopping:** Table-I's last column reads "FHSS; Maximum occupied
+  bandwidth <= 50 kHz for 58 or more hop channels". The wording comes from
+  EN 300 220-2, where it applies only to frequency-hopping equipment, and the
+  firmware relies on that reading. Read literally, it would require hopping,
+  which a fixed-channel Reticulum link does not do. WPC has published no
+  clarification.
+- **Type approval:** rule 5 requires the radio equipment to be type approved
+  by WPC and to comply with EN 300 220. Firmware cannot provide that; check
+  that your hardware's approval covers 865-868 MHz.
+- **Other India profiles:** LoRaWAN IN865 and Meshtastic's India region
+  (865-867 MHz at up to 30 dBm, no duty cycle) were based on the superseded
+  2005 rules (as amended in 2008). Do not copy their power settings.
 
 **Custom** removes regional limits and is available only with Developer
 controls on. Settings saved by older firmware keep their link: if a saved

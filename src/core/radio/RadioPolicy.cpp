@@ -105,14 +105,13 @@ const SubBand* subBandFor(const Region& region, uint32_t hz, uint32_t bandwidthH
 }
 
 int8_t conductedLimitDbm(const SubBand& band, int8_t antennaGainDbi) {
-    // Work in tenths of a dB and round down, so the cap never exceeds the rule.
-    int tenths = band.limitDbm * 10;
-    if (band.ref == PowerRef::Eirp) {
-        tenths -= antennaGainDbi * 10;
-    } else if (band.ref == PowerRef::Erp && antennaGainDbi * 10 > 21) {
-        tenths -= antennaGainDbi * 10 - 21;  // ERP is relative to a 2.15 dBi dipole.
-    }
-    return static_cast<int8_t>(tenths >= 0 ? tenths / 10 : -((-tenths + 9) / 10));
+    // Work in 0.01 dB. EIRP = conducted + gain; ERP = EIRP - 2.15 dB (a
+    // half-wave dipole). Keep the tolerance margin below the limit and round
+    // down, so the cap never exceeds the rule.
+    int centi = band.limitCentiDbm - TX_MARGIN_CENTI_DB;
+    if (band.ref == PowerRef::Eirp) centi -= antennaGainDbi * 100;
+    else if (band.ref == PowerRef::Erp) centi -= antennaGainDbi * 100 - 215;
+    return static_cast<int8_t>(centi >= 0 ? centi / 100 : -((-centi + 99) / 100));
 }
 
 int8_t txCapDbm(const Link& link, const BoardCaps& caps) {

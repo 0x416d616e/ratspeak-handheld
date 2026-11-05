@@ -47,6 +47,10 @@ struct Outcome {
     const char* reason;      // Set when refused.
 };
 
+// Regional power caps stay this far below each legal limit, to cover the
+// radio's output tolerance (about +/-1 dB).
+inline constexpr int TX_MARGIN_CENTI_DB = 100;
+
 namespace policy {
 
 // The region to apply limits from; unknown IDs behave as Custom.

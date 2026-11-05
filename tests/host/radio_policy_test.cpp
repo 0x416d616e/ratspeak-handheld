@@ -77,11 +77,29 @@ static void testRegionTable() {
     }
 }
 
+static void testPowerLimits() {
+    // 25 mW e.r.p. is 13.98 dBm; ERP adds 2.15 dB over a 2 dBi antenna's EIRP.
+    // Caps keep a 1 dB tolerance margin and round down.
+    const SubBand erp25 = {865000000, 868000000, LIMIT_25_MW, PowerRef::Erp, 10};
+    CHECK(policy::conductedLimitDbm(erp25, 0) == 15);   // 13.98 - 1 + 2.15 = 15.13
+    CHECK(policy::conductedLimitDbm(erp25, 2) == 13);   // 13.13
+    CHECK(policy::conductedLimitDbm(erp25, 5) == 10);   // 10.13
+    const SubBand eirp1w = {915000000, 928000000, LIMIT_1_W, PowerRef::Eirp, 1000};
+    CHECK(policy::conductedLimitDbm(eirp1w, 2) == 27);
+    const SubBand conducted100 = {920000000, 925000000, LIMIT_100_MW, PowerRef::Conducted, 1000};
+    CHECK(policy::conductedLimitDbm(conducted100, 6) == 19);  // gain does not change a conducted limit
+    const SubBand tiny = {865000000, 868000000, -50, PowerRef::Eirp, 10};
+    CHECK(policy::conductedLimitDbm(tiny, 2) == -4);    // -3.5 rounds down
+    // With a 2 dBi antenna the India cap stays under 25 mW e.r.p. with margin:
+    // 13 dBm + 2 dBi - 2.15 = 12.85 dBm e.r.p. = 19.3 mW.
+    CHECK(13 * 100 + 200 - 215 <= LIMIT_25_MW - TX_MARGIN_CENTI_DB);
+}
+
 static void testIndia() {
     Link l = link(RegionId::Americas, 915000000, 11, 250000, 5, 22);
     const Outcome outcome = policy::selectRegion(l, id(RegionId::India), CAPS);
     CHECK(outcome.verdict == Verdict::Adjusted);
-    CHECK(same(l, link(RegionId::India, 866600000, 9, 125000, 5, 14)));
+    CHECK(same(l, link(RegionId::India, 866600000, 9, 125000, 5, 13)));
     CHECK_STR(policy::presetName(l), "Lite Fast");
 
     // Only presets at or below 125 kHz are offered.
@@ -92,35 +110,39 @@ static void testIndia() {
     CHECK(!policy::presetAllowed(id(RegionId::India), PresetId::ShortTurbo));
     CHECK(policy::selectPreset(l, PresetId::LongFast, CAPS).verdict == Verdict::Refused);
     CHECK(policy::selectPreset(l, PresetId::LiteSlow, CAPS).verdict == Verdict::Ok);
-    CHECK(l.sf == 10 && l.bandwidthHz == 125000 && l.txDbm == 14);
+    CHECK(l.sf == 10 && l.bandwidthHz == 125000 && l.txDbm == 13);
 
     // Manual edits that would leave the band or the limits are refused.
     Link before = l;
-    CHECK(policy::edit(l, Field::TxPower, 20, CAPS).verdict == Verdict::Refused);
+    CHECK(policy::edit(l, Field::TxPower, 14, CAPS).verdict == Verdict::Refused);
     CHECK(policy::edit(l, Field::Frequency, 865000000, CAPS).verdict == Verdict::Refused);
-    CHECK(policy::edit(l, Field::Frequency, 867000000, CAPS).verdict == Verdict::Refused);
+    CHECK(policy::edit(l, Field::Frequency, 868000000, CAPS).verdict == Verdict::Refused);
+    CHECK(policy::edit(l, Field::Frequency, 867950000, CAPS).verdict == Verdict::Refused);
     CHECK(policy::edit(l, Field::Bandwidth, 250000, CAPS).verdict == Verdict::Refused);
     CHECK(same(l, before));
     CHECK(policy::edit(l, Field::Frequency, 865062500, CAPS).verdict == Verdict::Ok);
     CHECK(l.hz == 865062500);
+    // G.S.R. 853(E) covers 865-868 MHz.
+    CHECK(policy::edit(l, Field::Frequency, 867937500, CAPS).verdict == Verdict::Ok);
+    CHECK(policy::edit(l, Field::Frequency, 867000000, CAPS).verdict == Verdict::Ok);
     CHECK(policy::edit(l, Field::Bandwidth, 62500, CAPS).verdict == Verdict::Ok);
     CHECK(policy::edit(l, Field::TxPower, 10, CAPS).verdict == Verdict::Ok);
 
     char text[64];
-    Link shown = link(RegionId::India, 866600000, 9, 125000, 5, 14);
+    Link shown = link(RegionId::India, 866600000, 9, 125000, 5, 13);
     policy::formatLink(shown, text, sizeof(text));
     CHECK_STR(text, "866.6 MHz 125k SF9 CR5");
     policy::formatRules(shown, CAPS, text, sizeof(text));
-    CHECK_STR(text, "865-867 MHz, <=125k, 14 dBm, 1% duty");
+    CHECK_STR(text, "865-868 MHz, <=125k, 13 dBm, 1% duty");
 }
 
 static void testEurope() {
     Link l = link(RegionId::Americas, 915000000, 9, 250000, 5, 17);
     policy::selectRegion(l, id(RegionId::Europe), CAPS);
-    CHECK(same(l, link(RegionId::Europe, 868000000, 9, 250000, 5, 14)));
+    CHECK(same(l, link(RegionId::Europe, 868000000, 9, 250000, 5, 13)));
     char text[64];
     policy::formatRules(l, CAPS, text, sizeof(text));
-    CHECK_STR(text, "865-868.6 MHz, 14 dBm, 1% duty");
+    CHECK_STR(text, "865-868.6 MHz, 13 dBm, 1% duty");
 
     // 869.525 MHz is the 500 mW sub-band: the radio's own 22 dBm is allowed.
     CHECK(policy::edit(l, Field::Frequency, 869525000, CAPS).verdict == Verdict::Ok);
@@ -129,7 +151,7 @@ static void testEurope() {
     CHECK_STR(text, "869.4-869.65 MHz, 22 dBm, 10% duty");
     // Moving back lowers the power and says so.
     const Outcome back = policy::edit(l, Field::Frequency, 868000000, CAPS);
-    CHECK(back.verdict == Verdict::Adjusted && (back.changed & ChangedTxPower) && l.txDbm == 14);
+    CHECK(back.verdict == Verdict::Adjusted && (back.changed & ChangedTxPower) && l.txDbm == 13);
     // A 500 kHz preset does not fit 869.4-869.65 and moves to the default.
     CHECK(policy::edit(l, Field::Frequency, 869525000, CAPS).verdict == Verdict::Ok);
     const Outcome turbo = policy::selectPreset(l, PresetId::ShortTurbo, CAPS);
@@ -146,8 +168,8 @@ static void testOtherRegions() {
     CHECK(policy::edit(l, Field::Frequency, 915000000, CAPS).verdict == Verdict::Refused);
     policy::selectRegion(l, id(RegionId::Asia), CAPS);
     CHECK(l.hz == 923000000 && l.txDbm == 17);
-    CHECK(policy::edit(l, Field::TxPower, 22, CAPS).verdict == Verdict::Refused);
-    CHECK(policy::edit(l, Field::TxPower, 20, CAPS).verdict == Verdict::Ok);
+    CHECK(policy::edit(l, Field::TxPower, 20, CAPS).verdict == Verdict::Refused);
+    CHECK(policy::edit(l, Field::TxPower, 19, CAPS).verdict == Verdict::Ok);
 
     // Custom keeps the link and only applies hardware limits.
     Link custom = link(RegionId::India, 866600000, 9, 125000, 5, 14);
@@ -219,12 +241,12 @@ static void testMigration() {
     Link india = link(RegionId::India, 866000000, 9, 125000, 5, 22);   // this branch's earlier India
     policy::migrateLegacy(india, 4);
     CHECK(india.region == id(RegionId::India) && india.hz == 866000000);
-    CHECK(policy::conform(india, CAPS) == ChangedTxPower && india.txDbm == 14 && india.hz == 866000000);
+    CHECK(policy::conform(india, CAPS) == ChangedTxPower && india.txDbm == 13 && india.hz == 866000000);
 
     Link europe = link(RegionId::Americas, 868000000, 9, 250000, 5, 17);
     policy::migrateLegacy(europe, 1);
     CHECK(europe.region == id(RegionId::Europe));
-    CHECK(policy::conform(europe, CAPS) == ChangedTxPower && europe.txDbm == 14);
+    CHECK(policy::conform(europe, CAPS) == ChangedTxPower && europe.txDbm == 13);
 
     Link oldAustralia = link(RegionId::Americas, 915000000, 9, 250000, 5, 17);
     policy::migrateLegacy(oldAustralia, 2);   // spills below 915 MHz
@@ -272,6 +294,7 @@ static void testFormatting() {
 int main() {
     testPresetTableIsFrozen();
     testRegionTable();
+    testPowerLimits();
     testIndia();
     testEurope();
     testOtherRegions();
